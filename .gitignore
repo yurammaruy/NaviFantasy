@@ -1,0 +1,8 @@
+bin/
+obj/
+.vs/
+.idea/
+*.user
+*.suo
+# Nintendo's audio: keep it on your machine, don't publish it.
+NaviFantasy/Assets/*.mp3
