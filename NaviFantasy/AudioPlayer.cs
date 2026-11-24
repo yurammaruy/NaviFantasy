@@ -16,7 +16,7 @@ public sealed class AudioPlayer : IDisposable
     private readonly IPluginLog log;
     private readonly object gate = new();
     private WaveOutEvent? output;
-    private Mp3FileReader? reader;
+    private Mp3FileReaderBase? reader;
     private bool disposed;
 
     public AudioPlayer(string path, IPluginLog log)
@@ -42,7 +42,7 @@ public sealed class AudioPlayer : IDisposable
                 if (disposed) return;
                 StopInternal();
 
-                reader = new Mp3FileReader(path, wf => new Mp3FrameDecompressor(wf));
+                reader = new Mp3FileReaderBase(path, wf => new Mp3FrameDecompressor(wf));
                 output = new WaveOutEvent { Volume = Volume };
                 output.PlaybackStopped += OnPlaybackStopped;
                 output.Init(reader);
