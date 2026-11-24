@@ -1,0 +1,22 @@
+[
+  {
+    "Author": "yurammaruy",
+    "Name": "Navi Fantasy",
+    "InternalName": "NaviFantasy",
+    "AssemblyVersion": "0.1.0.0",
+    "Description": "Navi Fantasy puts a flapping fairy next to your character and plays a sound every 30 seconds. Use /navi to change her size.",
+    "Punchline": "A fairy companion that flutters around your character and yells for your attention.",
+    "ApplicableVersion": "any",
+    "RepoUrl": "https://github.com/yurammaruy/NaviFantasy",
+    "Tags": ["fairy", "companion", "navi", "fun"],
+    "DalamudApiLevel": 15,
+    "LoadPriority": 0,
+    "IsHide": false,
+    "IsTestingExclusive": false,
+    "DownloadCount": 0,
+    "LastUpdate": 1795561623,
+    "DownloadLinkInstall": "https://github.com/yurammaruy/NaviFantasy/releases/download/latest/latest.zip",
+    "DownloadLinkTesting": "https://github.com/yurammaruy/NaviFantasy/releases/download/latest/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/yurammaruy/NaviFantasy/releases/download/latest/latest.zip"
+  }
+]

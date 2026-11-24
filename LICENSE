@@ -20,7 +20,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-This license covers the source code only. It does not cover the artwork in
-NaviFantasy/Assets, nor any audio you place there. "Navi" and "Hey! Listen!"
-belong to Nintendo. This is an unofficial fan project, not affiliated with
-Nintendo or Square Enix.
+This license covers the source code only. The artwork and the sound in
+NaviFantasy/Assets were made by the author as fan-made work inspired by Navi
+from The Legend of Zelda; they are not covered by the MIT license and are not
+official Nintendo material. "Navi" and "Hey! Listen!" belong to Nintendo. This
+is an unofficial fan project, not affiliated with Nintendo or Square Enix.
