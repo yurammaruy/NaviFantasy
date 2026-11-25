@@ -5,10 +5,11 @@
     <Name>Navi Fantasy</Name>
     <InternalName>NaviFantasy</InternalName>
     <Punchline>A fairy companion that flutters around your character and yells for your attention.</Punchline>
-    <Description>Navi Fantasy puts a flapping fairy next to your character and plays a sound every 30 seconds. Use /navi to change her size.</Description>
+    <Description>Navi Fantasy is a glowing fairy that follows your character, calls you by your first name and warns you about low HP/MP, allies in trouble and incoming boss attacks. Use /navi for settings.</Description>
     <RepoUrl>https://github.com/yurammaruy/NaviFantasy</RepoUrl>
     <Tags>fairy;companion;navi;fun</Tags>
     <IsPackable>false</IsPackable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>

@@ -48,6 +48,12 @@ public sealed class FairyRenderer
     private readonly SpeechBubble bubble;
     private readonly List<Particle> particles = new();
 
+    private Vector2? perchPos;       // where on screen she should hover while delivering an alert (HUD readout)
+    private float perchUntil;
+    private string? pendingTip;      // message that comes right after the "Hey!"
+    private float pendingDelay;
+    private float tipDuration;
+
     private Vector2 position;
     private Vector2 velocity;
     private Vector2 offset;
@@ -83,6 +89,35 @@ public sealed class FairyRenderer
         Burst();
     }
 
+    /// <summary>"Hey!" immediately, then the actual message. Optionally she flies to the HUD readout (see SetPerch).</summary>
+    public void Announce(string tip, float tipSeconds, bool perch)
+    {
+        const float heyLead = 0.85f;
+        bubble.Show("Hey!", 1.0f);
+        Burst();
+        pendingTip = tip;
+        pendingDelay = heyLead;
+        tipDuration = tipSeconds;
+        perchUntil = perch ? time + heyLead + tipSeconds + 0.6f : 0f;
+    }
+
+    /// <summary>True while she is supposed to be hovering over the HUD.</summary>
+    public bool IsPerchActive => time < perchUntil;
+
+    /// <summary>Screen position of the HUD readout to hover over (null = none).</summary>
+    public void SetPerch(Vector2? position) => perchPos = position;
+
+    /// <summary>Hides everything (used in PvP).</summary>
+    public void Suspend()
+    {
+        initialized = false;
+        particles.Clear();
+        bubble.Dismiss();
+        pendingTip = null;
+        perchPos = null;
+        perchUntil = 0f;
+    }
+
     public void Draw(float dt)
     {
         var player = objectTable.LocalPlayer;
@@ -91,6 +126,7 @@ public sealed class FairyRenderer
             initialized = false;
             particles.Clear();
             bubble.Dismiss();
+            pendingTip = null;
             return;
         }
 
@@ -102,6 +138,16 @@ public sealed class FairyRenderer
 
         var scale = config.Scale;
         time += dt;
+
+        if (pendingTip != null)
+        {
+            pendingDelay -= dt;
+            if (pendingDelay <= 0f)
+            {
+                bubble.Show(pendingTip, tipDuration);
+                pendingTip = null;
+            }
+        }
 
         // Pick a new spot to flutter to every second or two.
         retargetTimer -= dt;
@@ -115,7 +161,17 @@ public sealed class FairyRenderer
 
         // Small constant hovering wobble.
         var bob = new Vector2(MathF.Sin(time * 3.1f) * 8f, MathF.Sin(time * 4.3f) * 10f);
-        var target = anchor + (offset + bob) * scale;
+        Vector2 target;
+        if (perchPos.HasValue && time < perchUntil)
+        {
+            // hover just above the HUD number she is talking about
+            var hover = BaseSize * scale * 0.5f + 14f * (BaseSize * scale / 48f);
+            target = perchPos.Value + new Vector2(0f, -hover) + bob * 0.35f * scale;
+        }
+        else
+        {
+            target = anchor + (offset + bob) * scale;
+        }
 
         if (!initialized || Vector2.Distance(position, target) > 2500f)
         {

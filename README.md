@@ -15,9 +15,21 @@ and plays a short "Hey!" sound every 30 seconds, with a speech bubble.
 4. Type `/xlplugins`, search for **Navi Fantasy** in *All Plugins* and click **Install**.
 
 ## Features
-- Glowing fairy with translucent wings, a fast flap animation, a halo and a trail of sparkles, flying around your character on screen.
-- `/navi` opens the settings window, which has a single option: **Size**.
-- Plays a sound once every 30 seconds while a character is in the world.
+- Glowing fairy with translucent wings, a fast flap animation, a halo and a trail of sparkles, flying around your character.
+- She reads your **character name and job**, and calls you by your first name.
+- Every message starts with a "Hey!" (sound + bubble) followed by the actual tip.
+- **PvE, any role:** warns you when your **HP** or **mana** drops below a configurable percentage, and flies to the HP / MP numbers on your HUD to tell you.
+- **In a party (dungeons etc.):**
+  - **Tank:** tells you when your allies are taking damage.
+  - **Healer:** tells you which ally needs healing.
+  - **DPS:** only your own HP and mana.
+- **Any role:** warns you when an enemy is preparing a powerful attack (casts of 3 s or more) and, when it can tell the shape of the attack, when you are standing in the danger zone.
+- **PvP:** the fairy is switched off (PvP features will come later).
+
+## Commands
+- `/navi` opens the settings (size, HP %, mana %, healer ally %).
+- `/navi status` shows what she detected: name, job, role, HP/MP, group, PvP.
+- `/navi test <hp|mp|heal|tank|boss|danger>` plays a sample alert so you can see it without waiting for the real thing.
 
 ## Build (developers)
 Requires the .NET 10 SDK.
