@@ -40,7 +40,7 @@ public sealed class Plugin : IDalamudPlugin
         configuration = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
 
         var assets = Path.Combine(pluginInterface.AssemblyLocation.DirectoryName ?? string.Empty, "Assets");
-        fairy = new FairyRenderer(configuration, Path.Combine(assets, "navi_wings_sheet.png"), textureProvider, gameGui, objectTable, condition);
+        fairy = new FairyRenderer(configuration, Path.Combine(assets, "navi_wings_sheet.png"), Path.Combine(assets, "speech_bubble.png"), textureProvider, gameGui, objectTable, condition);
         audio = new AudioPlayer(Path.Combine(assets, "hey_listen.mp3"), log);
 
         configWindow = new ConfigWindow(configuration, () => pluginInterface.SavePluginConfig(configuration));
@@ -83,6 +83,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             secondsSinceLastHey = 0f;
             audio.Play();
+            fairy.Say("Hey!"); // placeholder: later this will be a real tip
         }
     }
 

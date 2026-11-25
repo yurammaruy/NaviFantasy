@@ -7,7 +7,7 @@ using Dalamud.Plugin.Services;
 
 namespace NaviFantasy;
 
-/// <summary>Moves the fairy around the player's on-screen position and draws her with ImGui.</summary>
+/// <summary>Moves the fairy around the player's on-screen position, keeps her on screen, and draws her (and her speech bubble).</summary>
 public sealed class FairyRenderer
 {
     private const int Columns = 4;
@@ -23,6 +23,7 @@ public sealed class FairyRenderer
     private readonly IObjectTable objectTable;
     private readonly ICondition condition;
     private readonly ISharedImmediateTexture sheet;
+    private readonly SpeechBubble bubble;
 
     private Vector2 position;
     private Vector2 velocity;
@@ -34,6 +35,7 @@ public sealed class FairyRenderer
     public FairyRenderer(
         Configuration config,
         string sheetPath,
+        string bubblePath,
         ITextureProvider textureProvider,
         IGameGui gameGui,
         IObjectTable objectTable,
@@ -44,7 +46,11 @@ public sealed class FairyRenderer
         this.objectTable = objectTable;
         this.condition = condition;
         sheet = textureProvider.GetFromFile(sheetPath);
+        bubble = new SpeechBubble(textureProvider, bubblePath);
     }
+
+    /// <summary>Makes the fairy say something in a speech bubble.</summary>
+    public void Say(string text) => bubble.Show(text);
 
     public void Draw(float dt)
     {
@@ -52,6 +58,7 @@ public sealed class FairyRenderer
         if (player == null || condition[ConditionFlag.BetweenAreas] || condition[ConditionFlag.BetweenAreas51])
         {
             initialized = false;
+            bubble.Dismiss();
             return;
         }
 
@@ -92,6 +99,17 @@ public sealed class FairyRenderer
         velocity += accel * dt;
         position += velocity * dt;
 
+        // She can never leave the screen: that guarantees her speech bubble always has room
+        // (above her, or below her when she is hugging the top edge).
+        var half = BaseSize * scale * 0.5f;
+        var vp = ImGui.GetMainViewport();
+        var minP = vp.Pos + new Vector2(half);
+        var maxP = vp.Pos + vp.Size - new Vector2(half);
+        if (position.X < minP.X) { position.X = minP.X; velocity.X = MathF.Max(0f, velocity.X); }
+        else if (position.X > maxP.X) { position.X = maxP.X; velocity.X = MathF.Min(0f, velocity.X); }
+        if (position.Y < minP.Y) { position.Y = minP.Y; velocity.Y = MathF.Max(0f, velocity.Y); }
+        else if (position.Y > maxP.Y) { position.Y = maxP.Y; velocity.Y = MathF.Min(0f, velocity.Y); }
+
         // Lean into the direction of travel.
         var tilt = Math.Clamp(velocity.X * 0.0012f / MathF.Max(scale, 0.3f), -0.45f, 0.45f);
 
@@ -102,7 +120,6 @@ public sealed class FairyRenderer
         var uv0 = new Vector2(col / (float)Columns, row / (float)Rows);
         var uv1 = new Vector2((col + 1) / (float)Columns, (row + 1) / (float)Rows);
 
-        var half = BaseSize * scale * 0.5f;
         var cos = MathF.Cos(tilt);
         var sin = MathF.Sin(tilt);
         Vector2 Corner(float x, float y) => position + new Vector2(x * cos - y * sin, x * sin + y * cos);
@@ -112,5 +129,7 @@ public sealed class FairyRenderer
             Corner(-half, -half), Corner(half, -half), Corner(half, half), Corner(-half, half),
             uv0, new Vector2(uv1.X, uv0.Y), uv1, new Vector2(uv0.X, uv1.Y),
             0xFFFFFFFF);
+
+        bubble.Draw(position, half, dt);
     }
 }

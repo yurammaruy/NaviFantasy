@@ -6,7 +6,7 @@ namespace NaviFantasy;
 
 public sealed class ConfigWindow : Window
 {
-    public const float MinScale = 0.3f;
+    public const float MinScale = 0.1f;
     public const float MaxScale = 3.0f;
 
     private readonly Configuration config;

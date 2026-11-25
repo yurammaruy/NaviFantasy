@@ -1,7 +1,7 @@
 # Navi Fantasy
 
 A Dalamud plugin for FINAL FANTASY XIV: a Navi-inspired fairy flutters around your character
-and plays a short "Hey!" sound every 30 seconds.
+and plays a short "Hey!" sound every 30 seconds, with a speech bubble.
 
 **Status:** v0.1 (early test build)
 
