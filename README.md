@@ -9,7 +9,7 @@ and plays a short "Hey!" sound every 30 seconds, with a speech bubble.
 1. In game, type `/xlsettings` and open the **Experimental** tab.
 2. Under **Custom Plugin Repositories**, paste this link in the empty box, then click the **+** button:
 
-       https://raw.githubusercontent.com/yurammaruy/NaviFantasy/main/repo.json
+       https://github.com/yurammaruy/NaviFantasy/releases/download/latest/repo.json
 
 3. Click the **Save** button (bottom right).
 4. Type `/xlplugins`, search for **Navi Fantasy** in *All Plugins* and click **Install**.
@@ -26,8 +26,9 @@ Requires the .NET 10 SDK.
 2. In game: `/xlsettings` > **Experimental** > **Dev Plugin Locations**, add the folder with the built `NaviFantasy.dll`.
 3. `/xlplugins` > **Dev Tools** > enable **Navi Fantasy**.
 
-Every push to `main` is also built automatically by GitHub Actions and published as the **latest** release,
-which is what `repo.json` points to.
+Every push to `main` is built automatically by GitHub Actions and published as the **latest** release together with
+a fresh `repo.json`. The version number goes up on every build (0.2.<build number>.0), so Dalamud offers the update
+by itself. The `repo.json` in the repository is only the template for that file.
 
 ## Custom sound
 The sound is `NaviFantasy/Assets/hey_listen.mp3` (made by the author as a sound-alike, not an official recording).
