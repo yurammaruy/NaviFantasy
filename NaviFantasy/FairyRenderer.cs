@@ -363,4 +363,98 @@ public sealed class FairyRenderer
         var maxY = MathF.Max(minY, vp.Pos.Y + vp.Size.Y - margins.Y);
         return new Vector2(Math.Clamp(p.X, minX, maxX), Math.Clamp(p.Y, minY, maxY));
     }
+
+    private static void DrawSprite(ImDrawListPtr dl, ImTextureID tex, Vector2 center, float radius, float rotation, Vector4 tint)
+    {
+        var color = ImGui.ColorConvertFloat4ToU32(tint);
+        if (MathF.Abs(rotation) < 0.001f)
+        {
+            dl.AddImage(tex, center - new Vector2(radius), center + new Vector2(radius), Vector2.Zero, Vector2.One, color);
+            return;
+        }
+
+        var c = MathF.Cos(rotation);
+        var s = MathF.Sin(rotation);
+        Vector2 P(float x, float y) => center + new Vector2(x * c - y * s, x * s + y * c);
+        dl.AddImageQuad(
+            tex,
+            P(-radius, -radius), P(radius, -radius), P(radius, radius), P(-radius, radius),
+            new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(0f, 1f),
+            color);
+    }
+
+    private void SpawnParticle(Vector2 pos, Vector2 vel, float unit, float lifeMin, float lifeMax)
+    {
+        if (particles.Count >= MaxParticles)
+            return;
+
+        var rnd = Random.Shared;
+        var roll = rnd.NextSingle();
+        var color = roll < 0.6f ? new Vector3(1f, 1f, 1f)
+                  : roll < 0.9f ? new Vector3(0.6f, 0.95f, 1f)
+                  : new Vector3(1f, 0.92f, 0.65f);
+        var life = lifeMin + rnd.NextSingle() * (lifeMax - lifeMin);
+
+        particles.Add(new Particle
+        {
+            Pos = pos,
+            Vel = vel,
+            Life = life,
+            MaxLife = life,
+            Size = (3f + rnd.NextSingle() * 3.5f) * unit,
+            Rot = rnd.NextSingle() * MathF.Tau,
+            RotSpeed = (rnd.NextSingle() - 0.5f) * 2f,
+            Twinkle = rnd.NextSingle() * MathF.Tau,
+            Color = color,
+        });
+    }
+
+    private void UpdateParticles(float dt, Vector2 orb, float unit)
+    {
+        var rnd = Random.Shared;
+
+        // A steady trickle of dust, and more of it while she is darting around.
+        spawnAccumulator += dt * (14f + MathF.Min(velocity.Length() / 12f, 40f));
+        while (spawnAccumulator >= 1f)
+        {
+            spawnAccumulator -= 1f;
+            var angle = rnd.NextSingle() * MathF.Tau;
+            var dist = rnd.NextSingle() * 6f * unit;
+            var pos = orb + new Vector2(MathF.Cos(angle) * dist, MathF.Sin(angle) * dist);
+            var vel = new Vector2((rnd.NextSingle() - 0.5f) * 28f * unit, (rnd.NextSingle() - 0.2f) * 22f * unit) - velocity * 0.05f;
+            SpawnParticle(pos, vel, unit, 0.7f, 1.4f);
+        }
+
+        for (var i = particles.Count - 1; i >= 0; i--)
+        {
+            var p = particles[i];
+            p.Life -= dt;
+            if (p.Life <= 0f)
+            {
+                particles.RemoveAt(i);
+                continue;
+            }
+
+            p.Vel.Y += 38f * unit * dt;             // dust slowly falls
+            p.Vel *= MathF.Max(0f, 1f - 0.9f * dt); // and loses speed
+            p.Pos += p.Vel * dt;
+            p.Rot += p.RotSpeed * dt;
+            particles[i] = p;
+        }
+    }
+
+    private void Burst()
+    {
+        if (!initialized)
+            return;
+
+        const int count = 26;
+        var rnd = Random.Shared;
+        for (var i = 0; i < count; i++)
+        {
+            var angle = MathF.Tau * i / count + rnd.NextSingle() * 0.2f;
+            var speed = (50f + rnd.NextSingle() * 90f) * lastUnit;
+            SpawnParticle(lastOrb, new Vector2(MathF.Cos(angle), MathF.Sin(angle)) * speed, lastUnit, 0.7f, 1.5f);
+        }
+    }
 }

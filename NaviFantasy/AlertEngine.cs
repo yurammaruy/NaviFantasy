@@ -66,7 +66,7 @@ public sealed class AlertEngine
     private readonly Dictionary<uint, CastTrack> casts = new();
 
     private Alert? pendingFact;
-    private ushort cachedTerritory = ushort.MaxValue;
+    private uint cachedTerritory = uint.MaxValue;
     private uint cachedUse = uint.MaxValue;
     private float safeSeconds;
     private float clock;
