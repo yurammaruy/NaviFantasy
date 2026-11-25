@@ -285,7 +285,7 @@ public sealed class AlertEngine
         {
             if (obj is not IBattleNpc npc)
                 continue;
-            if (npc.BattleNpcKind != BattleNpcSubKind.Enemy || npc.IsDead || !npc.IsCasting)
+            if ((npc.StatusFlags & StatusFlags.Hostile) == 0 || npc.IsDead || !npc.IsCasting) // hostile = an enemy you can fight
                 continue;
             if (npc.CastActionType != 1) // 1 = a regular action (not an item, mount, etc.)
                 continue;
