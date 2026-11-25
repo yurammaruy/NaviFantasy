@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Game.ClientState.Conditions;
@@ -7,7 +9,10 @@ using Dalamud.Plugin.Services;
 
 namespace NaviFantasy;
 
-/// <summary>Moves the fairy around the player's on-screen position, keeps her on screen, and draws her (and her speech bubble).</summary>
+/// <summary>
+/// Moves the fairy around the player's on-screen position, keeps her on screen, and draws her:
+/// glow halo, pixie-dust sparkles, flapping wings, a bright orb, and her speech bubble.
+/// </summary>
 public sealed class FairyRenderer
 {
     private const int Columns = 4;
@@ -17,25 +22,45 @@ public sealed class FairyRenderer
     private const float BaseSize = 160f;     // pixels at Scale = 1
     private const float OrbitRadius = 110f;  // pixels at Scale = 1
     private const float HeightAbovePlayer = 2.3f; // world units (yalms) above the player's feet
+    private const float OrbOffsetY = 0.109f; // the orb sits a bit below the sprite's center (fraction of sprite size)
+    private const int MaxParticles = 160;
+
+    private struct Particle
+    {
+        public Vector2 Pos;
+        public Vector2 Vel;
+        public float Life;
+        public float MaxLife;
+        public float Size;     // star radius in pixels
+        public float Rot;
+        public float RotSpeed;
+        public float Twinkle;
+        public Vector3 Color;
+    }
 
     private readonly Configuration config;
     private readonly IGameGui gameGui;
     private readonly IObjectTable objectTable;
     private readonly ICondition condition;
     private readonly ISharedImmediateTexture sheet;
+    private readonly ISharedImmediateTexture glowTexture;
+    private readonly ISharedImmediateTexture sparkleTexture;
     private readonly SpeechBubble bubble;
+    private readonly List<Particle> particles = new();
 
     private Vector2 position;
     private Vector2 velocity;
     private Vector2 offset;
+    private Vector2 lastOrb;
+    private float lastUnit = 1f;
     private float retargetTimer;
+    private float spawnAccumulator;
     private float time;
     private bool initialized;
 
     public FairyRenderer(
         Configuration config,
-        string sheetPath,
-        string bubblePath,
+        string assetsDir,
         ITextureProvider textureProvider,
         IGameGui gameGui,
         IObjectTable objectTable,
@@ -45,12 +70,18 @@ public sealed class FairyRenderer
         this.gameGui = gameGui;
         this.objectTable = objectTable;
         this.condition = condition;
-        sheet = textureProvider.GetFromFile(sheetPath);
-        bubble = new SpeechBubble(textureProvider, bubblePath);
+        sheet = textureProvider.GetFromFile(Path.Combine(assetsDir, "navi_wings_sheet.png"));
+        glowTexture = textureProvider.GetFromFile(Path.Combine(assetsDir, "navi_glow.png"));
+        sparkleTexture = textureProvider.GetFromFile(Path.Combine(assetsDir, "navi_sparkle.png"));
+        bubble = new SpeechBubble(textureProvider, Path.Combine(assetsDir, "speech_bubble.png"));
     }
 
-    /// <summary>Makes the fairy say something in a speech bubble.</summary>
-    public void Say(string text) => bubble.Show(text);
+    /// <summary>Makes the fairy say something in a speech bubble, with a burst of sparkles.</summary>
+    public void Say(string text)
+    {
+        bubble.Show(text);
+        Burst();
+    }
 
     public void Draw(float dt)
     {
@@ -58,6 +89,7 @@ public sealed class FairyRenderer
         if (player == null || condition[ConditionFlag.BetweenAreas] || condition[ConditionFlag.BetweenAreas51])
         {
             initialized = false;
+            particles.Clear();
             bubble.Dismiss();
             return;
         }
@@ -90,6 +122,7 @@ public sealed class FairyRenderer
             position = target;
             velocity = Vector2.Zero;
             initialized = true;
+            particles.Clear();
         }
 
         // Underdamped spring: she overshoots a little, which reads as flying.
@@ -124,12 +157,143 @@ public sealed class FairyRenderer
         var sin = MathF.Sin(tilt);
         Vector2 Corner(float x, float y) => position + new Vector2(x * cos - y * sin, x * sin + y * cos);
 
-        ImGui.GetBackgroundDrawList().AddImageQuad(
+        var size = half * 2f;
+        var unit = size / 48f; // 1.0 at the default size (0.30x)
+        var orb = Corner(0f, size * OrbOffsetY);
+        lastOrb = orb;
+        lastUnit = unit;
+
+        UpdateParticles(dt, orb, unit);
+
+        var dl = ImGui.GetBackgroundDrawList();
+        var pulse = 0.5f + 0.5f * MathF.Sin(time * 5.2f);
+        var hasGlow = glowTexture.TryGetWrap(out var glow, out _) && glow != null;
+        var hasSparkle = sparkleTexture.TryGetWrap(out var sparkle, out _) && sparkle != null;
+
+        // 1) soft halo behind everything
+        if (hasGlow)
+            DrawSprite(dl, glow!.Handle, orb, size * (1.12f + 0.08f * pulse), 0f, new Vector4(1f, 1f, 1f, 0.50f + 0.18f * pulse));
+
+        // 2) pixie dust
+        if (hasSparkle)
+        {
+            foreach (var p in particles)
+            {
+                var t = p.Life / p.MaxLife; // 1 -> 0
+                var twinkle = 0.65f + 0.35f * MathF.Sin(time * 14f + p.Twinkle);
+                var alpha = Math.Clamp(t * 2.2f, 0f, 1f) * twinkle;
+                var radius = p.Size * (0.45f + 0.55f * t);
+                DrawSprite(dl, sparkle!.Handle, p.Pos, radius, p.Rot, new Vector4(p.Color, alpha));
+            }
+        }
+
+        // 3) wings
+        dl.AddImageQuad(
             texture.Handle,
             Corner(-half, -half), Corner(half, -half), Corner(half, half), Corner(-half, half),
             uv0, new Vector2(uv1.X, uv0.Y), uv1, new Vector2(uv0.X, uv1.Y),
             0xFFFFFFFF);
 
+        // 4) bright orb body on top
+        if (hasGlow)
+            DrawSprite(dl, glow!.Handle, orb, size * (0.17f + 0.02f * pulse), 0f, new Vector4(1f, 1f, 1f, 1f));
+        if (hasSparkle)
+            DrawSprite(dl, sparkle!.Handle, orb, size * (0.22f + 0.05f * pulse), time * 0.6f, new Vector4(1f, 1f, 1f, 0.85f));
+
         bubble.Draw(position, half, dt);
+    }
+
+    private static void DrawSprite(ImDrawListPtr dl, ImTextureID tex, Vector2 center, float radius, float rotation, Vector4 tint)
+    {
+        var color = ImGui.ColorConvertFloat4ToU32(tint);
+        if (MathF.Abs(rotation) < 0.001f)
+        {
+            dl.AddImage(tex, center - new Vector2(radius), center + new Vector2(radius), Vector2.Zero, Vector2.One, color);
+            return;
+        }
+
+        var c = MathF.Cos(rotation);
+        var s = MathF.Sin(rotation);
+        Vector2 P(float x, float y) => center + new Vector2(x * c - y * s, x * s + y * c);
+        dl.AddImageQuad(
+            tex,
+            P(-radius, -radius), P(radius, -radius), P(radius, radius), P(-radius, radius),
+            new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(0f, 1f),
+            color);
+    }
+
+    private void SpawnParticle(Vector2 pos, Vector2 vel, float unit, float lifeMin, float lifeMax)
+    {
+        if (particles.Count >= MaxParticles)
+            return;
+
+        var rnd = Random.Shared;
+        var roll = rnd.NextSingle();
+        var color = roll < 0.6f ? new Vector3(1f, 1f, 1f)
+                  : roll < 0.9f ? new Vector3(0.6f, 0.95f, 1f)
+                  : new Vector3(1f, 0.92f, 0.65f);
+        var life = lifeMin + rnd.NextSingle() * (lifeMax - lifeMin);
+
+        particles.Add(new Particle
+        {
+            Pos = pos,
+            Vel = vel,
+            Life = life,
+            MaxLife = life,
+            Size = (3f + rnd.NextSingle() * 3.5f) * unit,
+            Rot = rnd.NextSingle() * MathF.Tau,
+            RotSpeed = (rnd.NextSingle() - 0.5f) * 2f,
+            Twinkle = rnd.NextSingle() * MathF.Tau,
+            Color = color,
+        });
+    }
+
+    private void UpdateParticles(float dt, Vector2 orb, float unit)
+    {
+        var rnd = Random.Shared;
+
+        // A steady trickle of dust, and more of it while she is darting around.
+        spawnAccumulator += dt * (14f + MathF.Min(velocity.Length() / 12f, 40f));
+        while (spawnAccumulator >= 1f)
+        {
+            spawnAccumulator -= 1f;
+            var angle = rnd.NextSingle() * MathF.Tau;
+            var dist = rnd.NextSingle() * 6f * unit;
+            var pos = orb + new Vector2(MathF.Cos(angle) * dist, MathF.Sin(angle) * dist);
+            var vel = new Vector2((rnd.NextSingle() - 0.5f) * 28f * unit, (rnd.NextSingle() - 0.2f) * 22f * unit) - velocity * 0.05f;
+            SpawnParticle(pos, vel, unit, 0.7f, 1.4f);
+        }
+
+        for (var i = particles.Count - 1; i >= 0; i--)
+        {
+            var p = particles[i];
+            p.Life -= dt;
+            if (p.Life <= 0f)
+            {
+                particles.RemoveAt(i);
+                continue;
+            }
+
+            p.Vel.Y += 38f * unit * dt;          // dust slowly falls
+            p.Vel *= MathF.Max(0f, 1f - 0.9f * dt); // and loses speed
+            p.Pos += p.Vel * dt;
+            p.Rot += p.RotSpeed * dt;
+            particles[i] = p;
+        }
+    }
+
+    private void Burst()
+    {
+        if (!initialized)
+            return;
+
+        const int count = 26;
+        var rnd = Random.Shared;
+        for (var i = 0; i < count; i++)
+        {
+            var angle = MathF.Tau * i / count + rnd.NextSingle() * 0.2f;
+            var speed = (50f + rnd.NextSingle() * 90f) * lastUnit;
+            SpawnParticle(lastOrb, new Vector2(MathF.Cos(angle), MathF.Sin(angle)) * speed, lastUnit, 0.7f, 1.5f);
+        }
     }
 }

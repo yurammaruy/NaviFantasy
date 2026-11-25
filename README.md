@@ -15,7 +15,7 @@ and plays a short "Hey!" sound every 30 seconds, with a speech bubble.
 4. Type `/xlplugins`, search for **Navi Fantasy** in *All Plugins* and click **Install**.
 
 ## Features
-- Fairy with a fast wing-flap animation, flying around your character on screen.
+- Glowing fairy with translucent wings, a fast flap animation, a halo and a trail of sparkles, flying around your character on screen.
 - `/navi` opens the settings window, which has a single option: **Size**.
 - Plays a sound once every 30 seconds while a character is in the world.
 
