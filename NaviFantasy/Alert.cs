@@ -8,6 +8,7 @@ public enum AlertKind
     AlliesDamaged,
     BossCast,
     DangerZone,
+    Fact,
     Test,
 }
 

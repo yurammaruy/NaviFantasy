@@ -11,6 +11,7 @@ namespace NaviFantasy;
 public sealed class Plugin : IDalamudPlugin
 {
     private const string CommandName = "/navi";
+    private const string FactCommandName = "/ykff14"; // "You Know FF14"
 
     private readonly IDalamudPluginInterface pluginInterface;
     private readonly ICommandManager commandManager;
@@ -57,7 +58,8 @@ public sealed class Plugin : IDalamudPlugin
         var assets = Path.Combine(pluginInterface.AssemblyLocation.DirectoryName ?? string.Empty, "Assets");
         fairy = new FairyRenderer(configuration, assets, textureProvider, gameGui, objectTable, condition);
         audio = new AudioPlayer(Path.Combine(assets, "hey_listen.mp3"), log);
-        engine = new AlertEngine(configuration, objectTable, partyList, dataManager, condition);
+        var facts = new FunFacts(Path.Combine(assets, "curiosidades.txt"), log);
+        engine = new AlertEngine(configuration, objectTable, partyList, dataManager, condition, facts, clientState);
         hud = new HudLocator(gameGui);
 
         configWindow = new ConfigWindow(configuration, () => pluginInterface.SavePluginConfig(configuration));
@@ -65,7 +67,12 @@ public sealed class Plugin : IDalamudPlugin
 
         commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Navi Fantasy: /navi (settings), /navi status, /navi test <hp|mp|heal|tank|boss|danger>",
+            HelpMessage = "Navi Fantasy: /navi (settings), /navi status, /navi test <hp|mp|heal|tank|boss|danger|fact>",
+        });
+
+        commandManager.AddHandler(FactCommandName, new CommandInfo(OnFactCommand)
+        {
+            HelpMessage = "Navi tells you a random FF14 curiosity right now (You Know FF14).",
         });
 
         pluginInterface.UiBuilder.Draw += Draw;
@@ -142,6 +149,23 @@ public sealed class Plugin : IDalamudPlugin
             fairy.SetPerch(center); // if it is not found this frame, she simply stays where she was
     }
 
+    private void OnFactCommand(string command, string args)
+    {
+        if (clientState.IsPvP)
+        {
+            chatGui.Print("[Navi] A fada está desativada no PvP.");
+            return;
+        }
+
+        if (objectTable.LocalPlayer == null || !engine.MakeFactAlert(out var alert))
+        {
+            chatGui.Print("[Navi] Não encontrei nenhuma curiosidade (Assets/curiosidades.txt).");
+            return;
+        }
+
+        Raise(alert);
+    }
+
     private void OnCommand(string command, string args)
     {
         var parts = args.Trim().ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -160,7 +184,7 @@ public sealed class Plugin : IDalamudPlugin
                 RunTest(parts.Length > 1 ? parts[1] : string.Empty);
                 break;
             default:
-                chatGui.Print("[Navi] Comandos: /navi (configurações), /navi status, /navi test <hp|mp|heal|tank|boss|danger>");
+                chatGui.Print("[Navi] Comandos: /navi (configurações), /navi status, /navi test <hp|mp|heal|tank|boss|danger|fact>, /ykff14");
                 break;
         }
     }
@@ -184,6 +208,9 @@ public sealed class Plugin : IDalamudPlugin
         };
 
         chatGui.Print($"[Navi] Olá, {me.FirstName}! Você é {me.JobName} ({me.JobAbbreviation}), função: {role}.");
+        var use = engine.CurrentTerritoryUse();
+        var minutes = engine.SafeSeconds / 60f;
+        chatGui.Print($"[Navi] Território: tipo {(use == uint.MaxValue ? "?" : use.ToString())} | zona segura: {(engine.IsInSafeArea() ? "sim" : "não")} | contador de curiosidade: {minutes:0.0}/60 min");
         chatGui.Print($"[Navi] HP {player.CurrentHp}/{player.MaxHp} | MP {player.CurrentMp}/{player.MaxMp} | grupo: {partyList.Length} | PvP: {(clientState.IsPvP ? "sim (fada desativada)" : "não")} | em combate: {(condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.InCombat] ? "sim" : "não")}");
     }
 
@@ -203,6 +230,7 @@ public sealed class Plugin : IDalamudPlugin
 
         Alert? alert = what switch
         {
+            "fact" => engine.MakeFactAlert(out var fact) ? fact : null,
             "hp" => new Alert(AlertKind.Test, $"{me.FirstName}, seu HP está baixo (teste)!", 70, HudPerch.Hp, 4.5f),
             "mp" => new Alert(AlertKind.Test, $"{me.FirstName}, sua mana está baixa (teste)!", 40, HudPerch.Mp, 4.5f),
             "heal" => new Alert(AlertKind.Test, "Fulano precisa de cura! (teste)", 60, HudPerch.None, 3.5f),
@@ -214,7 +242,7 @@ public sealed class Plugin : IDalamudPlugin
 
         if (alert == null)
         {
-            chatGui.Print("[Navi] Use: /navi test <hp|mp|heal|tank|boss|danger>");
+            chatGui.Print("[Navi] Use: /navi test <hp|mp|heal|tank|boss|danger|fact>");
             return;
         }
 
@@ -227,6 +255,7 @@ public sealed class Plugin : IDalamudPlugin
         pluginInterface.UiBuilder.OpenConfigUi -= ToggleConfig;
         pluginInterface.UiBuilder.OpenMainUi -= ToggleConfig;
         commandManager.RemoveHandler(CommandName);
+        commandManager.RemoveHandler(FactCommandName);
         windowSystem.RemoveAllWindows();
         audio.Dispose();
     }

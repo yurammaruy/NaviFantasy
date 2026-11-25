@@ -5,6 +5,7 @@ using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Interface.Textures;
+using Dalamud.Interface.Utility;
 using Dalamud.Plugin.Services;
 
 namespace NaviFantasy;
@@ -20,8 +21,10 @@ public sealed class FairyRenderer
     private const int FrameCount = 8;
     private const float FlapFps = 60f;       // 8 frames -> ~7.5 flaps per second
     private const float BaseSize = 160f;     // pixels at Scale = 1
-    private const float OrbitRadius = 110f;  // pixels at Scale = 1
-    private const float HeightAbovePlayer = 2.3f; // world units (yalms) above the player's feet
+    private const float ShoulderHeight = 1.45f;    // world units (yalms) above the feet: where her "home" is
+    private const float SideDistanceYalms = 0.9f;  // how far to the side of the character she hovers
+    private const float WanderYalms = 0.18f;       // how far she flutters around that spot
+    private const float MouseMargin = 44f;         // she keeps at least this many pixels away from the mouse cursor
     private const float OrbOffsetY = 0.109f; // the orb sits a bit below the sprite's center (fraction of sprite size)
     private const int MaxParticles = 160;
 
@@ -56,7 +59,11 @@ public sealed class FairyRenderer
 
     private Vector2 position;
     private Vector2 velocity;
-    private Vector2 offset;
+    private Vector2 wander;
+    private Vector2 relMin = new(-1f);   // her bounding box (and speech bubble) relative to her position
+    private Vector2 relMax = new(1f);
+    private float side = Random.Shared.Next(2) == 0 ? -1f : 1f; // -1 left shoulder, +1 right shoulder
+    private float sideTimer = 8f;
     private Vector2 lastOrb;
     private float lastUnit = 1f;
     private float retargetTimer;
@@ -133,10 +140,17 @@ public sealed class FairyRenderer
         if (!sheet.TryGetWrap(out var texture, out _) || texture == null)
             return;
 
-        if (!gameGui.WorldToScreen(player.Position + new Vector3(0f, HeightAbovePlayer, 0f), out var anchor))
+        if (!gameGui.WorldToScreen(player.Position + new Vector3(0f, ShoulderHeight, 0f), out var shoulder))
             return; // behind the camera / off screen
+        if (!gameGui.WorldToScreen(player.Position, out var feet))
+            feet = shoulder + new Vector2(0f, 120f);
 
         var scale = config.Scale;
+        var half = BaseSize * scale * 0.5f;
+        var unit = BaseSize * scale / 48f;   // 1.0 at the default size (0.30x)
+        var gs = ImGuiHelpers.GlobalScale;
+        var pxPerYalm = MathF.Max(24f, MathF.Abs(feet.Y - shoulder.Y) / ShoulderHeight); // how big the character looks on screen
+        var vp = ImGui.GetMainViewport();
         time += dt;
 
         if (pendingTip != null)
@@ -149,28 +163,103 @@ public sealed class FairyRenderer
             }
         }
 
-        // Pick a new spot to flutter to every second or two.
+        // Pick a new spot to flutter to every second or two, and swap shoulders every now and then.
         retargetTimer -= dt;
         if (retargetTimer <= 0f)
         {
             retargetTimer = 1.2f + Random.Shared.NextSingle() * 1.6f;
             var angle = Random.Shared.NextSingle() * MathF.Tau;
-            var radius = (0.7f + Random.Shared.NextSingle() * 0.9f) * OrbitRadius;
-            offset = new Vector2(MathF.Cos(angle) * radius * 1.3f, MathF.Sin(angle) * radius * 0.8f - OrbitRadius * 0.25f);
+            var radius = 0.7f + Random.Shared.NextSingle() * 0.9f;
+            wander = new Vector2(MathF.Cos(angle) * 1.3f, MathF.Sin(angle) * 0.8f) * radius;
+        }
+
+        sideTimer -= dt;
+        if (sideTimer <= 0f)
+        {
+            sideTimer = 8f + Random.Shared.NextSingle() * 6f;
+            side = -side;
         }
 
         // Small constant hovering wobble.
-        var bob = new Vector2(MathF.Sin(time * 3.1f) * 8f, MathF.Sin(time * 4.3f) * 10f);
-        Vector2 target;
+        var bob = new Vector2(MathF.Sin(time * 3.1f) * 8f, MathF.Sin(time * 4.3f) * 10f) * MathF.Max(unit, 0.6f);
+
+        // Where she wants to be: next to the character's shoulder, or over the HUD number she is talking about.
+        Vector2 home;
         if (perchPos.HasValue && time < perchUntil)
         {
-            // hover just above the HUD number she is talking about
-            var hover = BaseSize * scale * 0.5f + 14f * (BaseSize * scale / 48f);
-            target = perchPos.Value + new Vector2(0f, -hover) + bob * 0.35f * scale;
+            var hover = half + 14f * unit;
+            home = perchPos.Value + new Vector2(0f, -hover) + bob * 0.35f;
         }
         else
         {
-            target = anchor + (offset + bob) * scale;
+            var sideDistance = MathF.Max(SideDistanceYalms * pxPerYalm, half * 1.8f + 16f * gs);
+            var x = shoulder.X + side * sideDistance;
+            if (x < vp.Pos.X + half || x > vp.Pos.X + vp.Size.X - half)
+            {
+                side = -side; // that side is off screen: use the other shoulder
+                x = shoulder.X + side * sideDistance;
+            }
+
+            home = new Vector2(x, shoulder.Y - 0.15f * pxPerYalm) + wander * (WanderYalms * pxPerYalm) + bob;
+        }
+
+        // The speech bubble is rigidly attached to her (it never moves on its own), so while it is showing she stays far
+        // enough from the side edges of the screen for the whole bubble to fit.
+        var marginX = MathF.Max(half, MathF.Max(MathF.Abs(relMin.X), MathF.Abs(relMax.X)) + 4f * gs);
+        var margins = new Vector2(marginX, half);
+
+        var target = ClampToScreen(home, margins);
+
+        // The mouse cursor: she AND her bubble move away together, by the shortest way out, in any direction,
+        // without leaving the screen.
+        var sprint = false;
+        var mouse = ImGui.GetMousePos();
+        if (mouse.X > -5000f && mouse.Y > -5000f)
+        {
+            var margin = MouseMargin * gs;
+            var boxMin = relMin;
+            var boxMax = relMax;
+
+            float DistanceToMouse(Vector2 p)
+            {
+                var dx = MathF.Max(MathF.Max(p.X + boxMin.X - mouse.X, mouse.X - (p.X + boxMax.X)), 0f);
+                var dy = MathF.Max(MathF.Max(p.Y + boxMin.Y - mouse.Y, mouse.Y - (p.Y + boxMax.Y)), 0f);
+                return MathF.Sqrt(dx * dx + dy * dy);
+            }
+
+            // Threatened: she is too close right now. Otherwise only her usual spot is too close to the mouse.
+            var threatened = DistanceToMouse(position) < margin;
+            if (threatened || DistanceToMouse(target) < margin)
+            {
+                var origin = threatened ? position : target;
+                var maxStep = MathF.Max(vp.Size.X, vp.Size.Y);
+                var found = false;
+                for (var step = 12f * gs; step <= maxStep && !found; step += 12f * gs)
+                {
+                    var best = target;
+                    var bestScore = float.MaxValue;
+                    for (var i = 0; i < 32; i++)
+                    {
+                        var angle = i * MathF.Tau / 32f;
+                        var cand = ClampToScreen(origin + new Vector2(MathF.Cos(angle), MathF.Sin(angle)) * step, margins);
+                        if (DistanceToMouse(cand) < margin)
+                            continue;
+
+                        var score = Vector2.Distance(cand, target); // among the shortest escapes, stay close to her usual spot
+                        if (score < bestScore)
+                        {
+                            bestScore = score;
+                            best = cand;
+                            found = true;
+                        }
+                    }
+
+                    if (found)
+                        target = best;
+                }
+            }
+
+            sprint = DistanceToMouse(position) < margin * 1.8f;
         }
 
         if (!initialized || Vector2.Distance(position, target) > 2500f)
@@ -181,19 +270,17 @@ public sealed class FairyRenderer
             particles.Clear();
         }
 
-        // Underdamped spring: she overshoots a little, which reads as flying.
-        const float stiffness = 18f;
-        var damping = 2f * MathF.Sqrt(stiffness) * 0.55f;
+        // Underdamped spring: she overshoots a little, which reads as flying. Much snappier when dodging the mouse.
+        var stiffness = sprint ? 75f : 18f;
+        var damping = 2f * MathF.Sqrt(stiffness) * (sprint ? 0.85f : 0.55f);
         var accel = (target - position) * stiffness - velocity * damping;
         velocity += accel * dt;
         position += velocity * dt;
 
         // She can never leave the screen: that guarantees her speech bubble always has room
         // (above her, or below her when she is hugging the top edge).
-        var half = BaseSize * scale * 0.5f;
-        var vp = ImGui.GetMainViewport();
-        var minP = vp.Pos + new Vector2(half);
-        var maxP = vp.Pos + vp.Size - new Vector2(half);
+        var minP = vp.Pos + margins;
+        var maxP = vp.Pos + vp.Size - margins;
         if (position.X < minP.X) { position.X = minP.X; velocity.X = MathF.Max(0f, velocity.X); }
         else if (position.X > maxP.X) { position.X = maxP.X; velocity.X = MathF.Min(0f, velocity.X); }
         if (position.Y < minP.Y) { position.Y = minP.Y; velocity.Y = MathF.Max(0f, velocity.Y); }
@@ -214,7 +301,6 @@ public sealed class FairyRenderer
         Vector2 Corner(float x, float y) => position + new Vector2(x * cos - y * sin, x * sin + y * cos);
 
         var size = half * 2f;
-        var unit = size / 48f; // 1.0 at the default size (0.30x)
         var orb = Corner(0f, size * OrbOffsetY);
         lastOrb = orb;
         lastUnit = unit;
@@ -257,99 +343,24 @@ public sealed class FairyRenderer
             DrawSprite(dl, sparkle!.Handle, orb, size * (0.22f + 0.05f * pulse), time * 0.6f, new Vector4(1f, 1f, 1f, 0.85f));
 
         bubble.Draw(position, half, dt);
-    }
 
-    private static void DrawSprite(ImDrawListPtr dl, ImTextureID tex, Vector2 center, float radius, float rotation, Vector4 tint)
-    {
-        var color = ImGui.ColorConvertFloat4ToU32(tint);
-        if (MathF.Abs(rotation) < 0.001f)
+        // Remember her bounding box together with her speech bubble: they are one thing as far as the mouse is concerned.
+        relMin = new Vector2(-half);
+        relMax = new Vector2(half);
+        if (bubble.TryGetRect(out var bubbleMin, out var bubbleMax))
         {
-            dl.AddImage(tex, center - new Vector2(radius), center + new Vector2(radius), Vector2.Zero, Vector2.One, color);
-            return;
-        }
-
-        var c = MathF.Cos(rotation);
-        var s = MathF.Sin(rotation);
-        Vector2 P(float x, float y) => center + new Vector2(x * c - y * s, x * s + y * c);
-        dl.AddImageQuad(
-            tex,
-            P(-radius, -radius), P(radius, -radius), P(radius, radius), P(-radius, radius),
-            new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(0f, 1f),
-            color);
-    }
-
-    private void SpawnParticle(Vector2 pos, Vector2 vel, float unit, float lifeMin, float lifeMax)
-    {
-        if (particles.Count >= MaxParticles)
-            return;
-
-        var rnd = Random.Shared;
-        var roll = rnd.NextSingle();
-        var color = roll < 0.6f ? new Vector3(1f, 1f, 1f)
-                  : roll < 0.9f ? new Vector3(0.6f, 0.95f, 1f)
-                  : new Vector3(1f, 0.92f, 0.65f);
-        var life = lifeMin + rnd.NextSingle() * (lifeMax - lifeMin);
-
-        particles.Add(new Particle
-        {
-            Pos = pos,
-            Vel = vel,
-            Life = life,
-            MaxLife = life,
-            Size = (3f + rnd.NextSingle() * 3.5f) * unit,
-            Rot = rnd.NextSingle() * MathF.Tau,
-            RotSpeed = (rnd.NextSingle() - 0.5f) * 2f,
-            Twinkle = rnd.NextSingle() * MathF.Tau,
-            Color = color,
-        });
-    }
-
-    private void UpdateParticles(float dt, Vector2 orb, float unit)
-    {
-        var rnd = Random.Shared;
-
-        // A steady trickle of dust, and more of it while she is darting around.
-        spawnAccumulator += dt * (14f + MathF.Min(velocity.Length() / 12f, 40f));
-        while (spawnAccumulator >= 1f)
-        {
-            spawnAccumulator -= 1f;
-            var angle = rnd.NextSingle() * MathF.Tau;
-            var dist = rnd.NextSingle() * 6f * unit;
-            var pos = orb + new Vector2(MathF.Cos(angle) * dist, MathF.Sin(angle) * dist);
-            var vel = new Vector2((rnd.NextSingle() - 0.5f) * 28f * unit, (rnd.NextSingle() - 0.2f) * 22f * unit) - velocity * 0.05f;
-            SpawnParticle(pos, vel, unit, 0.7f, 1.4f);
-        }
-
-        for (var i = particles.Count - 1; i >= 0; i--)
-        {
-            var p = particles[i];
-            p.Life -= dt;
-            if (p.Life <= 0f)
-            {
-                particles.RemoveAt(i);
-                continue;
-            }
-
-            p.Vel.Y += 38f * unit * dt;          // dust slowly falls
-            p.Vel *= MathF.Max(0f, 1f - 0.9f * dt); // and loses speed
-            p.Pos += p.Vel * dt;
-            p.Rot += p.RotSpeed * dt;
-            particles[i] = p;
+            relMin = Vector2.Min(relMin, bubbleMin - position);
+            relMax = Vector2.Max(relMax, bubbleMax - position);
         }
     }
 
-    private void Burst()
+    private static Vector2 ClampToScreen(Vector2 p, Vector2 margins)
     {
-        if (!initialized)
-            return;
-
-        const int count = 26;
-        var rnd = Random.Shared;
-        for (var i = 0; i < count; i++)
-        {
-            var angle = MathF.Tau * i / count + rnd.NextSingle() * 0.2f;
-            var speed = (50f + rnd.NextSingle() * 90f) * lastUnit;
-            SpawnParticle(lastOrb, new Vector2(MathF.Cos(angle), MathF.Sin(angle)) * speed, lastUnit, 0.7f, 1.5f);
-        }
+        var vp = ImGui.GetMainViewport();
+        var minX = vp.Pos.X + margins.X;
+        var minY = vp.Pos.Y + margins.Y;
+        var maxX = MathF.Max(minX, vp.Pos.X + vp.Size.X - margins.X);
+        var maxY = MathF.Max(minY, vp.Pos.Y + vp.Size.Y - margins.Y);
+        return new Vector2(Math.Clamp(p.X, minX, maxX), Math.Clamp(p.Y, minY, maxY));
     }
 }

@@ -9,6 +9,7 @@ using Dalamud.Plugin.Services;
 using Dalamud.Utility;
 using LuminaAction = Lumina.Excel.Sheets.Action;
 using LuminaClassJob = Lumina.Excel.Sheets.ClassJob;
+using LuminaTerritoryType = Lumina.Excel.Sheets.TerritoryType;
 
 namespace NaviFantasy;
 
@@ -33,6 +34,12 @@ public sealed class AlertEngine
     private const float HeyLeadSeconds = 0.85f;     // the "Hey!" that comes before every message
     private const float PlayerHitbox = 0.5f;
     private const float ZoneMargin = 0.5f;
+    private const float FactIntervalSeconds = 3600f; // one curiosity per hour spent in a safe area
+    // TerritoryIntendedUse ids: 0 = city ("Town"), 13 = residential district, 14 = inside a house/apartment.
+    // (Use "/navi status" to see the id the game reports where you are.)
+    private const uint UseTown = 0;
+    private const uint UseHousingOutdoor = 13;
+    private const uint UseHousingIndoor = 14;
 
     private sealed class CastTrack
     {
@@ -51,23 +58,31 @@ public sealed class AlertEngine
     private readonly IPartyList partyList;
     private readonly IDataManager dataManager;
     private readonly ICondition condition;
+    private readonly FunFacts facts;
+    private readonly IClientState clientState;
 
     private readonly Dictionary<AlertKind, float> readyAt = new();
     private readonly Dictionary<string, Queue<(float Time, float Pct)>> hpHistory = new();
     private readonly Dictionary<uint, CastTrack> casts = new();
 
+    private Alert? pendingFact;
+    private ushort cachedTerritory = ushort.MaxValue;
+    private uint cachedUse = uint.MaxValue;
+    private float safeSeconds;
     private float clock;
     private float tickTimer;
     private float activeUntil;
     private int activePriority;
 
-    public AlertEngine(Configuration config, IObjectTable objectTable, IPartyList partyList, IDataManager dataManager, ICondition condition)
+    public AlertEngine(Configuration config, IObjectTable objectTable, IPartyList partyList, IDataManager dataManager, ICondition condition, FunFacts facts, IClientState clientState)
     {
         this.config = config;
         this.objectTable = objectTable;
         this.partyList = partyList;
         this.dataManager = dataManager;
         this.condition = condition;
+        this.facts = facts;
+        this.clientState = clientState;
     }
 
     public static string FirstName(string fullName)
@@ -116,6 +131,7 @@ public sealed class AlertEngine
         tickTimer += dt;
         if (tickTimer < TickSeconds)
             return null;
+        var elapsed = tickTimer;
         tickTimer = 0f;
 
         var player = objectTable.LocalPlayer;
@@ -125,29 +141,34 @@ public sealed class AlertEngine
             return null;
         }
 
-        if (!TryGetProfile(out var me) || !me.IsCombatJob)
+        if (!TryGetProfile(out var me))
             return null;
 
         var candidates = new List<Candidate>();
 
-        AddOwnVitals(player, me, candidates);
-
-        if (partyList.Length > 1)
+        if (me.IsCombatJob)
         {
-            if (me.IsHealer) AddHealerAlert(me, candidates);
-            else hpHistory.Clear();
+            AddOwnVitals(player, me, candidates);
 
-            if (me.IsTank) AddTankAlert(me, candidates);
-        }
-        else
-        {
-            hpHistory.Clear();
+            if (partyList.Length > 1)
+            {
+                if (me.IsHealer) AddHealerAlert(me, candidates);
+                else hpHistory.Clear();
+
+                if (me.IsTank) AddTankAlert(me, candidates);
+            }
+            else
+            {
+                hpHistory.Clear();
+            }
+
+            if (condition[ConditionFlag.InCombat] || condition[ConditionFlag.BoundByDuty])
+                AddBossAlerts(player, me, candidates);
+            else
+                casts.Clear();
         }
 
-        if (condition[ConditionFlag.InCombat] || condition[ConditionFlag.BoundByDuty])
-            AddBossAlerts(player, me, candidates);
-        else
-            casts.Clear();
+        AddFunFact(elapsed, candidates);
 
         Candidate? best = null;
         foreach (var c in candidates)
@@ -171,6 +192,79 @@ public sealed class AlertEngine
     }
 
     private bool IsReady(AlertKind kind) => !readyAt.TryGetValue(kind, out var t) || clock >= t;
+
+    // ---------------------------------------------------------------- curiosities
+
+    /// <summary>Builds a "Você sabia?" alert from the next fact in the bag (also used by the /ykff14 command).</summary>
+    public bool MakeFactAlert(out Alert alert)
+    {
+        alert = null!;
+        if (!facts.TryNext(out var text))
+            return false;
+
+        var duration = Math.Clamp(3f + text.Length * 0.055f, 4.5f, 12f); // more text, more time to read it
+        alert = new Alert(AlertKind.Fact, text, 10, HudPerch.None, duration);
+        return true;
+    }
+
+    /// <summary>Seconds counted so far towards the next curiosity.</summary>
+    public float SafeSeconds => safeSeconds;
+
+    /// <summary>The game's "intended use" id of the current territory (0 city, 13/14 housing, 1 open world, 3 dungeon...).</summary>
+    public uint CurrentTerritoryUse()
+    {
+        var id = clientState.TerritoryType;
+        if (id != cachedTerritory)
+        {
+            cachedTerritory = id;
+            cachedUse = uint.MaxValue;
+            var sheet = dataManager.GetExcelSheet<LuminaTerritoryType>();
+            if (sheet.TryGetRow(id, out var row))
+                cachedUse = row.TerritoryIntendedUse.RowId;
+        }
+
+        return cachedUse;
+    }
+
+    /// <summary>True in the main cities and in residential districts (and inside houses).</summary>
+    public bool IsInSafeArea()
+    {
+        var use = CurrentTerritoryUse();
+        return use == UseTown || use == UseHousingOutdoor || use == UseHousingIndoor;
+    }
+
+    /// <summary>
+    /// Every hour spent in a safe area (main cities / residential districts, out of combat), she tells a random curiosity.
+    /// The clock only runs while you are in such an area; it pauses everywhere else and only starts over after she
+    /// has told a curiosity (or when the game is closed).
+    /// </summary>
+    private void AddFunFact(float elapsed, List<Candidate> list)
+    {
+        var safe = IsInSafeArea() && !condition[ConditionFlag.InCombat] && !condition[ConditionFlag.BoundByDuty];
+        if (safe)
+            safeSeconds += elapsed;
+
+        if (safeSeconds < FactIntervalSeconds)
+            return;
+
+        if (pendingFact == null)
+        {
+            if (!MakeFactAlert(out var made))
+            {
+                safeSeconds = 0f; // no facts available: do not retry every tick
+                return;
+            }
+
+            pendingFact = made;
+        }
+
+        var fact = pendingFact;
+        list.Add(new Candidate(fact, 0f, () =>
+        {
+            pendingFact = null;
+            safeSeconds = 0f;
+        }));
+    }
 
     // ---------------------------------------------------------------- own HP / MP (every role)
 

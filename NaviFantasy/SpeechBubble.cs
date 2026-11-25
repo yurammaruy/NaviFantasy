@@ -34,6 +34,9 @@ public sealed class SpeechBubble
     private float remaining;
     private float elapsed;
     private bool flipped;
+    private bool hasRect;
+    private Vector2 rectMin;
+    private Vector2 rectMax;
 
     public SpeechBubble(ITextureProvider textureProvider, string path)
     {
@@ -49,8 +52,17 @@ public sealed class SpeechBubble
 
     public void Dismiss() => remaining = 0f;
 
+    /// <summary>Screen rectangle of the bubble as drawn this frame (false if it is not showing).</summary>
+    public bool TryGetRect(out Vector2 min, out Vector2 max)
+    {
+        min = rectMin;
+        max = rectMax;
+        return hasRect;
+    }
+
     public void Draw(Vector2 fairyPos, float fairyHalf, float dt)
     {
+        hasRect = false;
         if (remaining <= 0f || string.IsNullOrWhiteSpace(text))
             return;
         if (!sprite.TryGetWrap(out var tex, out _) || tex == null)
@@ -63,7 +75,18 @@ public sealed class SpeechBubble
         var ps = PixelScale * gs;
 
         // --- text and bubble size ---
-        var lines = Wrap(text, MaxTextWidth * gs, MaxLines);
+        // Grow the bubble sideways until the text fits in at most two lines (up to ~60% of the screen); cut with "..." beyond that.
+        var maxWidth = MaxTextWidth * gs;
+        var widthCap = MathF.Max(maxWidth, MathF.Min(ImGui.GetMainViewport().Size.X * 0.6f, 860f * gs));
+        var lines = Wrap(text, maxWidth, int.MaxValue);
+        while (lines.Count > MaxLines && maxWidth < widthCap)
+        {
+            maxWidth = MathF.Min(widthCap, maxWidth + 40f * gs);
+            lines = Wrap(text, maxWidth, int.MaxValue);
+        }
+
+        if (lines.Count > MaxLines)
+            lines = Wrap(text, widthCap, MaxLines);
         var lineH = ImGui.GetTextLineHeight();
         var textW = 0f;
         foreach (var l in lines)
@@ -104,7 +127,8 @@ public sealed class SpeechBubble
 
         var originY = flipped ? feetY + gap - slide : headY - gap - totalH + slide;
 
-        // Horizontal: keep the whole bubble on screen, then slide the arrow along it so it still points at her.
+        // Horizontal: the bubble is centered on her (rigid). The fairy keeps away from the screen edges so it fits;
+        // this clamp is only a safety net for the first frame, and the arrow then slides so it still points at her.
         var margin = 4f * gs;
         var left = Math.Clamp(fairyPos.X - width * 0.5f, vpPos.X + margin, MathF.Max(vpPos.X + margin, vpPos.X + vpSize.X - width - margin));
         var tipOffset = fairyPos.X - left;
@@ -118,6 +142,10 @@ public sealed class SpeechBubble
         var xC1 = xB1 + wC;
         var xD1 = xC1 + rw;
         var xE1 = xD1 + wE;
+
+        rectMin = new Vector2(left, originY);
+        rectMax = new Vector2(left + width, originY + totalH);
+        hasRect = true;
 
         var dl = ImGui.GetBackgroundDrawList();
         var white = ImGui.ColorConvertFloat4ToU32(new Vector4(1f, 1f, 1f, alpha));
