@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using Dalamud.Game.Addon.Lifecycle;
-using Dalamud.Game.Addon.Lifecycle.AddonArgs;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 
@@ -9,22 +8,23 @@ namespace NaviFantasy;
 
 /// <summary>
 /// Best-effort detector of unread Moogle letters. The game has no documented "unread letters" value, so this watches
-/// the HUD: it remembers the HUD addons (names starting with "_") that have "Letter" or "Mail" in their name and
-/// reports unread mail while one of them is visible. Use /navi mail to see what it is looking at.
+/// the HUD: it remembers the HUD addons (names starting with "_") that have "Letter", "Mail" or "Notification" in their
+/// name and reports unread mail while one with "Letter"/"Mail" is visible. Use /navi mail to see what it is looking at.
 /// </summary>
 public sealed unsafe class MailWatcher : IDisposable
 {
-    private readonly IAddonLifecycle lifecycle;
     private readonly IGameGui gameGui;
     private readonly HashSet<string> names = new();
     private readonly object gate = new();
 
     public MailWatcher(IAddonLifecycle lifecycle, IGameGui gameGui)
     {
-        this.lifecycle = lifecycle;
         this.gameGui = gameGui;
-        lifecycle.RegisterListener(AddonEvent.PostSetup, OnSetup);
-        lifecycle.RegisterListener(AddonEvent.PreFinalize, OnFinalize);
+
+        // Lambdas, so this code never has to name the event-argument type. Dalamud removes a plugin's listeners
+        // by itself when the plugin is unloaded.
+        lifecycle.RegisterListener(AddonEvent.PostSetup, (eventType, args) => Track(args.AddonName, true));
+        lifecycle.RegisterListener(AddonEvent.PreFinalize, (eventType, args) => Track(args.AddonName, false));
     }
 
     private static bool IsRelevant(string name) =>
@@ -37,18 +37,16 @@ public sealed unsafe class MailWatcher : IDisposable
         name.Contains("Letter", StringComparison.OrdinalIgnoreCase) ||
         name.Contains("Mail", StringComparison.OrdinalIgnoreCase);
 
-    private void OnSetup(AddonEvent type, AddonArgs args)
+    private void Track(string? name, bool added)
     {
-        var name = args.AddonName;
-        if (!string.IsNullOrEmpty(name) && IsRelevant(name))
-            lock (gate) names.Add(name);
-    }
+        if (string.IsNullOrEmpty(name))
+            return;
 
-    private void OnFinalize(AddonEvent type, AddonArgs args)
-    {
-        var name = args.AddonName;
-        if (!string.IsNullOrEmpty(name))
-            lock (gate) names.Remove(name);
+        lock (gate)
+        {
+            if (!added) names.Remove(name);
+            else if (IsRelevant(name)) names.Add(name);
+        }
     }
 
     private bool IsVisible(string name)
@@ -84,7 +82,6 @@ public sealed unsafe class MailWatcher : IDisposable
 
     public void Dispose()
     {
-        lifecycle.UnregisterListener(AddonEvent.PostSetup, OnSetup);
-        lifecycle.UnregisterListener(AddonEvent.PreFinalize, OnFinalize);
+        // Nothing to do: the listeners belong to this plugin and Dalamud drops them on unload.
     }
 }
