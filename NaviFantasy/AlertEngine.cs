@@ -35,6 +35,10 @@ public sealed class AlertEngine
     private const float PlayerHitbox = 0.5f;
     private const float ZoneMargin = 0.5f;
     private const float FactIntervalSeconds = 3600f; // one curiosity per hour spent in a safe area
+    private const float HydrationIntervalSeconds = 71f * 60f; // 1h11
+    private const float DailyRepeatSeconds = 2f * 3600f;      // keep reminding about pending dailies every 2 hours
+    private const float MailRepeatSeconds = 3f * 3600f;       // and about unread mail every 3 hours
+    private const string HydrationText = "Seu personagem não precisa comer nem beber mas você sim, não queremos perder nenhum jogador dedicado.";
     // TerritoryIntendedUse ids: 0 = city ("Town"), 13 = residential district, 14 = inside a house/apartment.
     // (Use "/navi status" to see the id the game reports where you are.)
     private const uint UseTown = 0;
@@ -60,12 +64,19 @@ public sealed class AlertEngine
     private readonly ICondition condition;
     private readonly FunFacts facts;
     private readonly IClientState clientState;
+    private readonly DailyTracker tracker;
+    private readonly MailWatcher mail;
 
     private readonly Dictionary<AlertKind, float> readyAt = new();
     private readonly Dictionary<string, Queue<(float Time, float Pct)>> hpHistory = new();
     private readonly Dictionary<uint, CastTrack> casts = new();
 
     private Alert? pendingFact;
+    private float dailyClock;
+    private float nextDailyAt = 60f;   // first check one minute after she appears
+    private float mailClock;
+    private float nextMailAt = 90f;
+    private float hydrationSeconds;
     private uint cachedTerritory = uint.MaxValue;
     private uint cachedUse = uint.MaxValue;
     private float safeSeconds;
@@ -74,7 +85,7 @@ public sealed class AlertEngine
     private float activeUntil;
     private int activePriority;
 
-    public AlertEngine(Configuration config, IObjectTable objectTable, IPartyList partyList, IDataManager dataManager, ICondition condition, FunFacts facts, IClientState clientState)
+    public AlertEngine(Configuration config, IObjectTable objectTable, IPartyList partyList, IDataManager dataManager, ICondition condition, FunFacts facts, IClientState clientState, DailyTracker tracker, MailWatcher mail)
     {
         this.config = config;
         this.objectTable = objectTable;
@@ -83,6 +94,8 @@ public sealed class AlertEngine
         this.condition = condition;
         this.facts = facts;
         this.clientState = clientState;
+        this.tracker = tracker;
+        this.mail = mail;
     }
 
     public static string FirstName(string fullName)
@@ -169,6 +182,7 @@ public sealed class AlertEngine
         }
 
         AddFunFact(elapsed, candidates);
+        AddReminders(elapsed, me, candidates);
 
         Candidate? best = null;
         foreach (var c in candidates)
@@ -192,6 +206,65 @@ public sealed class AlertEngine
     }
 
     private bool IsReady(AlertKind kind) => !readyAt.TryGetValue(kind, out var t) || clock >= t;
+
+    // ---------------------------------------------------------------- reminders: dailies, mail, eat & drink
+
+    /// <summary>Daily roulettes still pending (names), using the configured selection.</summary>
+    public List<string> PendingDailies() => tracker.GetPending(config.DailyRouletteIds);
+
+    public bool HasUnreadMail() => mail.HasUnreadMail();
+
+    public Alert MakeDailyAlert(string firstName, List<string> pending)
+    {
+        var shown = pending.Count <= 3
+            ? string.Join(", ", pending)
+            : string.Join(", ", pending.GetRange(0, 3)) + $" e mais {pending.Count - 3}";
+        var text = $"{firstName}, você ainda tem atividades diárias: {shown}!";
+        return new Alert(AlertKind.DailyTasks, text, 20, HudPerch.None, Math.Clamp(3.5f + text.Length * 0.055f, 5f, 10f));
+    }
+
+    public Alert MakeMailAlert(string firstName) =>
+        new(AlertKind.UnreadMail, $"{firstName}, você tem cartas no correio que ainda não leu!", 20, HudPerch.None, 5f);
+
+    public static Alert MakeHydrationAlert() =>
+        new(AlertKind.Hydration, HydrationText, 5, HudPerch.None, Math.Clamp(3f + HydrationText.Length * 0.055f, 4.5f, 12f));
+
+    private void AddReminders(float elapsed, PlayerProfile me, List<Candidate> list)
+    {
+        var inCombat = condition[ConditionFlag.InCombat];
+        var calm = !inCombat && !condition[ConditionFlag.BoundByDuty];
+
+        // Eat and drink: the clock runs the whole time you are playing; she says it as soon as you are out of combat.
+        hydrationSeconds += elapsed;
+        if (config.RemindHydration && hydrationSeconds >= HydrationIntervalSeconds && !inCombat)
+            list.Add(new Candidate(MakeHydrationAlert(), 0f, () => hydrationSeconds = 0f));
+
+        dailyClock += elapsed;
+        mailClock += elapsed;
+        if (!calm)
+            return; // dailies and mail are only mentioned when she will not interrupt a fight or a duty
+
+        if (config.RemindDailies && dailyClock >= nextDailyAt)
+        {
+            var pending = PendingDailies();
+            if (pending.Count == 0)
+            {
+                nextDailyAt = dailyClock + 300f; // all done: look again in 5 minutes (the daily reset can happen while you play)
+            }
+            else
+            {
+                list.Add(new Candidate(MakeDailyAlert(me.FirstName, pending), 0f, () => nextDailyAt = dailyClock + DailyRepeatSeconds));
+            }
+        }
+
+        if (config.RemindMail && mailClock >= nextMailAt)
+        {
+            if (!mail.HasUnreadMail())
+                nextMailAt = mailClock + 60f;
+            else
+                list.Add(new Candidate(MakeMailAlert(me.FirstName), 0f, () => nextMailAt = mailClock + MailRepeatSeconds));
+        }
+    }
 
     // ---------------------------------------------------------------- curiosities
 

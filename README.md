@@ -32,12 +32,17 @@ and plays a short "Hey!" sound every 30 seconds, with a speech bubble.
   she tells a random "Você sabia?" fact (100 facts in `Assets/curiosidades.txt`, none repeats until all were told).
   The hour counter pauses outside those areas and resumes when you come back; it only starts over after she told a
   curiosity or when the game is closed.
+- **Daily roulettes:** after login (and every 2 hours) she reminds you of the Duty Roulettes whose daily bonus is still
+  pending. Which roulettes count can be chosen in the settings.
+- **Unread mail:** she tells you when you have unread Moogle letters (best effort: it watches the HUD letter icon).
+- **Eat and drink:** every 1h11 she reminds you that your character does not need food or water, but you do.
 - **PvP:** the fairy is switched off (PvP features will come later).
 
 ## Commands
 - `/navi` opens the settings (size, HP %, mana %, healer ally %).
 - `/navi status` shows what she detected: name, job, role, HP/MP, group, PvP.
 - `/navi test <hp|mp|heal|tank|boss|danger|fact>` plays a sample alert so you can see it without waiting for the real thing.
+- `/navi roulettes` lists the roulettes and whether today's bonus is done; `/navi mail` shows what the mail detector sees.
 - `/ykff14` ("You Know FF14") makes her tell a random curiosity right now.
 
 ## Build (developers)

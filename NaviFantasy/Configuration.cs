@@ -19,4 +19,16 @@ public class Configuration : IPluginConfiguration
 
     /// <summary>(Healers) she tells you when an ally is below this HP percentage.</summary>
     public int AllyHealPercent { get; set; } = 60;
+
+    /// <summary>Remind about daily Duty Roulettes that are still pending.</summary>
+    public bool RemindDailies { get; set; } = true;
+
+    /// <summary>Roulette ids to monitor. Null = the default set (the ones a max-level character normally sees).</summary>
+    public System.Collections.Generic.List<uint>? DailyRouletteIds { get; set; }
+
+    /// <summary>Warn about unread letters in the Moogle mailbox.</summary>
+    public bool RemindMail { get; set; } = true;
+
+    /// <summary>Every 1h11 she reminds you to eat and drink.</summary>
+    public bool RemindHydration { get; set; } = true;
 }

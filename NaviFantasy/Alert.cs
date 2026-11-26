@@ -9,6 +9,9 @@ public enum AlertKind
     BossCast,
     DangerZone,
     Fact,
+    DailyTasks,
+    UnreadMail,
+    Hydration,
     Test,
 }
 

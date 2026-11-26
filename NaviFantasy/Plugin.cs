@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Game.Command;
@@ -27,6 +28,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly AudioPlayer audio;
     private readonly AlertEngine engine;
     private readonly HudLocator hud;
+    private readonly DailyTracker dailies;
+    private readonly MailWatcher mailWatcher;
 
     private HudPerch perch = HudPerch.None;
     private float perchRefresh;
@@ -43,6 +46,7 @@ public sealed class Plugin : IDalamudPlugin
         IPartyList partyList,
         IDataManager dataManager,
         IChatGui chatGui,
+        IAddonLifecycle addonLifecycle,
         IPluginLog log)
     {
         this.pluginInterface = pluginInterface;
@@ -58,16 +62,18 @@ public sealed class Plugin : IDalamudPlugin
         var assets = Path.Combine(pluginInterface.AssemblyLocation.DirectoryName ?? string.Empty, "Assets");
         fairy = new FairyRenderer(configuration, assets, textureProvider, gameGui, objectTable, condition);
         audio = new AudioPlayer(Path.Combine(assets, "hey_listen.mp3"), log);
+        dailies = new DailyTracker(dataManager, log);
+        mailWatcher = new MailWatcher(addonLifecycle, gameGui);
         var facts = new FunFacts(Path.Combine(assets, "curiosidades.txt"), log);
-        engine = new AlertEngine(configuration, objectTable, partyList, dataManager, condition, facts, clientState);
+        engine = new AlertEngine(configuration, objectTable, partyList, dataManager, condition, facts, clientState, dailies, mailWatcher);
         hud = new HudLocator(gameGui);
 
-        configWindow = new ConfigWindow(configuration, () => pluginInterface.SavePluginConfig(configuration));
+        configWindow = new ConfigWindow(configuration, () => pluginInterface.SavePluginConfig(configuration), dailies);
         windowSystem.AddWindow(configWindow);
 
         commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Navi Fantasy: /navi (settings), /navi status, /navi test <hp|mp|heal|tank|boss|danger|fact>",
+            HelpMessage = "Navi Fantasy: /navi (settings), /navi status, /navi test <hp|mp|heal|tank|boss|danger|fact|daily|mail|water>, /navi roulettes, /navi mail",
         });
 
         commandManager.AddHandler(FactCommandName, new CommandInfo(OnFactCommand)
@@ -183,8 +189,14 @@ public sealed class Plugin : IDalamudPlugin
             case "test":
                 RunTest(parts.Length > 1 ? parts[1] : string.Empty);
                 break;
+            case "roulettes":
+                PrintRoulettes();
+                break;
+            case "mail":
+                PrintMail();
+                break;
             default:
-                chatGui.Print("[Navi] Comandos: /navi (configurações), /navi status, /navi test <hp|mp|heal|tank|boss|danger|fact>, /ykff14");
+                chatGui.Print("[Navi] Comandos: /navi (configurações), /navi status, /navi test <hp|mp|heal|tank|boss|danger|fact|daily|mail|water>, /navi roulettes, /navi mail, /ykff14");
                 break;
         }
     }
@@ -208,10 +220,41 @@ public sealed class Plugin : IDalamudPlugin
         };
 
         chatGui.Print($"[Navi] Olá, {me.FirstName}! Você é {me.JobName} ({me.JobAbbreviation}), função: {role}.");
+        var pendingDailies = engine.PendingDailies();
+        chatGui.Print($"[Navi] Roletas diárias pendentes: {(pendingDailies.Count == 0 ? "nenhuma" : string.Join(", ", pendingDailies))}");
         var use = engine.CurrentTerritoryUse();
         var minutes = engine.SafeSeconds / 60f;
         chatGui.Print($"[Navi] Território: tipo {(use == uint.MaxValue ? "?" : use.ToString())} | zona segura: {(engine.IsInSafeArea() ? "sim" : "não")} | contador de curiosidade: {minutes:0.0}/60 min");
         chatGui.Print($"[Navi] HP {player.CurrentHp}/{player.MaxHp} | MP {player.CurrentMp}/{player.MaxMp} | grupo: {partyList.Length} | PvP: {(clientState.IsPvP ? "sim (fada desativada)" : "não")} | em combate: {(condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.InCombat] ? "sim" : "não")}");
+    }
+
+    private void PrintRoulettes()
+    {
+        var chosen = configuration.DailyRouletteIds != null ? new HashSet<uint>(configuration.DailyRouletteIds) : dailies.DefaultIds();
+        if (dailies.Roulettes.Count == 0)
+        {
+            chatGui.Print("[Navi] Não consegui carregar a lista de roletas.");
+            return;
+        }
+
+        foreach (var r in dailies.Roulettes)
+            chatGui.Print($"[Navi] {r.Id}: {r.Name} - {(dailies.IsComplete(r.Id) ? "concluída hoje" : "pendente")}{(chosen.Contains(r.Id) ? " [acompanhada]" : string.Empty)}");
+    }
+
+    private void PrintMail()
+    {
+        var seen = mailWatcher.Describe();
+        if (seen.Count == 0)
+        {
+            chatGui.Print("[Navi] Nenhum elemento de HUD com \"Letter\", \"Mail\" ou \"Notification\" no nome foi visto ainda (se o plugin foi instalado com o jogo aberto, relogue).");
+        }
+        else
+        {
+            foreach (var (name, visible) in seen)
+                chatGui.Print($"[Navi] HUD: {name} - {(visible ? "visível" : "oculto")}");
+        }
+
+        chatGui.Print($"[Navi] Cartas não lidas (palpite): {(mailWatcher.HasUnreadMail() ? "sim" : "não")}");
     }
 
     private void RunTest(string what)
@@ -228,9 +271,16 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
+        var samplePending = engine.PendingDailies();
+        if (samplePending.Count == 0)
+            samplePending = new List<string> { "Leveling", "Trials", "Main Scenario" }; // nothing pending: show a sample
+
         Alert? alert = what switch
         {
             "fact" => engine.MakeFactAlert(out var fact) ? fact : null,
+            "daily" => engine.MakeDailyAlert(me.FirstName, samplePending),
+            "mail" => engine.MakeMailAlert(me.FirstName),
+            "water" => AlertEngine.MakeHydrationAlert(),
             "hp" => new Alert(AlertKind.Test, $"{me.FirstName}, seu HP está baixo (teste)!", 70, HudPerch.Hp, 4.5f),
             "mp" => new Alert(AlertKind.Test, $"{me.FirstName}, sua mana está baixa (teste)!", 40, HudPerch.Mp, 4.5f),
             "heal" => new Alert(AlertKind.Test, "Fulano precisa de cura! (teste)", 60, HudPerch.None, 3.5f),
@@ -242,7 +292,7 @@ public sealed class Plugin : IDalamudPlugin
 
         if (alert == null)
         {
-            chatGui.Print("[Navi] Use: /navi test <hp|mp|heal|tank|boss|danger|fact>");
+            chatGui.Print("[Navi] Use: /navi test <hp|mp|heal|tank|boss|danger|fact|daily|mail|water>");
             return;
         }
 
@@ -258,5 +308,6 @@ public sealed class Plugin : IDalamudPlugin
         commandManager.RemoveHandler(FactCommandName);
         windowSystem.RemoveAllWindows();
         audio.Dispose();
+        mailWatcher.Dispose();
     }
 }
