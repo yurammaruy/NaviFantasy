@@ -32,13 +32,10 @@ public sealed class AlertEngine
     private const float PowerfulCastSeconds = 3.0f; // enemy casts at least this long count as "powerful"
     private const float ScanRadius = 50f;           // only enemies this close (yalms)
     private const float HeyLeadSeconds = 0.85f;     // the "Hey!" that comes before every message
-    private const float PlayerHitbox = 0.5f;
-    private const float ZoneMargin = 0.5f;
     private const float FactIntervalSeconds = 3600f; // one curiosity per hour spent in a safe area
     private const float HydrationIntervalSeconds = 71f * 60f; // 1h11
     private const float DailyRepeatSeconds = 2f * 3600f;      // keep reminding about pending dailies every 2 hours
     private const float MailRepeatSeconds = 3f * 3600f;       // and about unread mail every 3 hours
-    private const string HydrationText = "Seu personagem não precisa comer nem beber mas você sim, não queremos perder nenhum jogador dedicado.";
     // TerritoryIntendedUse ids: 0 = city ("Town"), 13 = residential district, 14 = inside a house/apartment.
     // (Use "/navi status" to see the id the game reports where you are.)
     private const uint UseTown = 0;
@@ -50,12 +47,9 @@ public sealed class AlertEngine
         public CastTrack(uint actionId) => ActionId = actionId;
         public uint ActionId;
         public bool Announced;
-        public bool DangerAnnounced;
     }
 
     private sealed record Candidate(Alert Alert, float Cooldown, Action? Commit);
-
-    private enum Zone { Unknown, Safe, Danger }
 
     private readonly Configuration config;
     private readonly IObjectTable objectTable;
@@ -218,16 +212,30 @@ public sealed class AlertEngine
     {
         var shown = pending.Count <= 3
             ? string.Join(", ", pending)
-            : string.Join(", ", pending.GetRange(0, 3)) + $" e mais {pending.Count - 3}";
-        var text = $"{firstName}, você ainda tem atividades diárias: {shown}!";
-        return new Alert(AlertKind.DailyTasks, text, 20, HudPerch.None, Math.Clamp(3.5f + text.Length * 0.055f, 5f, 10f));
+            : string.Join(", ", pending.GetRange(0, 3)) + Loc.Get("and_more", pending.Count - 3);
+        var text = Loc.Get("daily", firstName, shown);
+        return new Alert(AlertKind.DailyTasks, text, 20, HudPerch.None, ReadingSeconds(text, 5f, 10f));
     }
 
     public Alert MakeMailAlert(string firstName) =>
-        new(AlertKind.UnreadMail, $"{firstName}, você tem cartas no correio que ainda não leu!", 20, HudPerch.None, 5f);
+        new(AlertKind.UnreadMail, Loc.Get("mail", firstName), 20, HudPerch.None, 5f);
 
-    public static Alert MakeHydrationAlert() =>
-        new(AlertKind.Hydration, HydrationText, 5, HudPerch.None, Math.Clamp(3f + HydrationText.Length * 0.055f, 4.5f, 12f));
+    public static Alert MakeHydrationAlert()
+    {
+        var text = Loc.Get("hydration");
+        return new Alert(AlertKind.Hydration, text, 5, HudPerch.None, ReadingSeconds(text, 4.5f, 12f));
+    }
+
+    /// <summary>How long a message stays on screen: more text, more time. Japanese needs more time per character.</summary>
+    private static float ReadingSeconds(string text, float min, float max)
+    {
+        var cjk = false;
+        foreach (var ch in text)
+            if (ch >= '\u3000')
+                cjk = true;
+
+        return Math.Clamp(3f + text.Length * (cjk ? 0.12f : 0.055f), min, max);
+    }
 
     private void AddReminders(float elapsed, PlayerProfile me, List<Candidate> list)
     {
@@ -275,8 +283,7 @@ public sealed class AlertEngine
         if (!facts.TryNext(out var text))
             return false;
 
-        var duration = Math.Clamp(3f + text.Length * 0.055f, 4.5f, 12f); // more text, more time to read it
-        alert = new Alert(AlertKind.Fact, text, 10, HudPerch.None, duration);
+        alert = new Alert(AlertKind.Fact, text, 10, HudPerch.None, ReadingSeconds(text, 4.5f, 12f));
         return true;
     }
 
@@ -348,7 +355,7 @@ public sealed class AlertEngine
             var pct = 100f * player.CurrentHp / player.MaxHp;
             if (pct < config.HpAlertPercent)
             {
-                var text = $"{me.FirstName}, seu HP está baixo ({pct:0}%)!";
+                var text = Loc.Get("hp_low", me.FirstName);
                 list.Add(new Candidate(new Alert(AlertKind.OwnHp, text, 70, HudPerch.Hp, 4.5f), 30f, null));
             }
         }
@@ -358,7 +365,7 @@ public sealed class AlertEngine
             var pct = 100f * player.CurrentMp / player.MaxMp;
             if (pct < config.MpAlertPercent)
             {
-                var text = $"{me.FirstName}, sua mana está baixa ({pct:0}%)!";
+                var text = Loc.Get("mp_low", me.FirstName);
                 list.Add(new Candidate(new Alert(AlertKind.OwnMp, text, 40, HudPerch.Mp, 4.5f), 30f, null));
             }
         }
@@ -387,8 +394,8 @@ public sealed class AlertEngine
 
         if (worstName != null && worstPct < config.AllyHealPercent)
         {
-            var text = $"{FirstName(worstName)} precisa de cura!";
-            list.Add(new Candidate(new Alert(AlertKind.AllyNeedsHeal, text, 60, HudPerch.None, 3.5f), 8f, null));
+            var text = Loc.Get("ally_heal", FirstName(worstName));
+            list.Add(new Candidate(new Alert(AlertKind.AllyNeedsHeal, text, 60, HudPerch.PartyMember, 3.5f, worstName), 8f, null));
         }
     }
 
@@ -436,7 +443,7 @@ public sealed class AlertEngine
 
         if (someoneHurt)
         {
-            var text = $"{me.FirstName}, seus aliados estão sofrendo dano!";
+            var text = Loc.Get("allies_hurt", me.FirstName);
             list.Add(new Candidate(new Alert(AlertKind.AlliesDamaged, text, 50, HudPerch.None, 4f), 20f, null));
         }
     }
@@ -471,38 +478,18 @@ public sealed class AlertEngine
                 casts[id] = track;
             }
 
-            var remaining = total - npc.CurrentCastTime;
-
-            var actionName = "um golpe forte";
-            var castType = 0;
-            var range = 0;
-            var width = 0;
+            var actionName = Loc.Get("strong_attack");
             if (actions.TryGetRow(npc.CastActionId, out var action))
             {
                 var name = action.Name.ExtractText();
                 if (!string.IsNullOrWhiteSpace(name))
                     actionName = name;
-                castType = action.CastType;
-                range = action.EffectRange;
-                width = action.XAxisModifier;
             }
 
-            var zone = EvaluateZone(npc, castType, range, width, player);
             var captured = track;
-
-            if (zone == Zone.Danger && !captured.DangerAnnounced && remaining > 0.6f)
+            if (!captured.Announced)
             {
-                var text = $"Sai daí, {me.FirstName}! {actionName} vai te acertar!";
-                var duration = Math.Clamp(remaining, 2f, 4f);
-                list.Add(new Candidate(new Alert(AlertKind.DangerZone, text, 100, HudPerch.None, duration), 1.5f, () =>
-                {
-                    captured.DangerAnnounced = true;
-                    captured.Announced = true;
-                }));
-            }
-            else if (!captured.Announced)
-            {
-                var text = $"{npc.Name.TextValue} está preparando {actionName}!";
+                var text = Loc.Get("boss_cast", npc.Name.TextValue, actionName);
                 list.Add(new Candidate(new Alert(AlertKind.BossCast, text, 80, HudPerch.None, 4f), 6f, () => captured.Announced = true));
             }
         }
@@ -514,56 +501,5 @@ public sealed class AlertEngine
                 finished.Add(key);
         foreach (var key in finished)
             casts.Remove(key);
-    }
-
-    /// <summary>
-    /// Best-effort check of whether the player stands inside the area of an enemy cast.
-    /// Only shapes we are sure about are evaluated; everything else is "Unknown" (the fairy still warns about the cast,
-    /// but does not claim you are in the danger zone).
-    /// </summary>
-    private Zone EvaluateZone(IBattleNpc npc, int castType, int range, int width, IPlayerCharacter player)
-    {
-        var p = new Vector2(player.Position.X, player.Position.Z);
-        var c = new Vector2(npc.Position.X, npc.Position.Z);
-        var targetsMe = npc.CastTargetObjectId == player.GameObjectId;
-
-        switch (castType)
-        {
-            case 1: // single target
-                return targetsMe ? Zone.Danger : Zone.Safe;
-
-            case 2: // circle centered on the target
-            {
-                if (targetsMe)
-                    return Zone.Danger;
-
-                foreach (var other in objectTable)
-                {
-                    if (other.GameObjectId != npc.CastTargetObjectId)
-                        continue;
-                    var center = new Vector2(other.Position.X, other.Position.Z);
-                    return Vector2.Distance(p, center) <= range + PlayerHitbox + ZoneMargin ? Zone.Danger : Zone.Safe;
-                }
-
-                return Zone.Unknown;
-            }
-
-            case 5: // circle centered on the caster
-                return Vector2.Distance(p, c) <= range + npc.HitboxRadius + PlayerHitbox + ZoneMargin ? Zone.Danger : Zone.Safe;
-
-            case 4: // line / rectangle in front of the caster
-            {
-                var yaw = npc.Rotation;
-                var forward = new Vector2(MathF.Sin(yaw), MathF.Cos(yaw));
-                var d = p - c;
-                var along = Vector2.Dot(d, forward);
-                var across = MathF.Abs(d.X * forward.Y - d.Y * forward.X);
-                var inside = along >= -ZoneMargin && along <= range + PlayerHitbox + ZoneMargin && across <= width * 0.5f + PlayerHitbox + ZoneMargin;
-                return inside ? Zone.Danger : Zone.Safe;
-            }
-
-            default:
-                return Zone.Unknown;
-        }
     }
 }

@@ -53,6 +53,8 @@ public sealed class FairyRenderer
 
     private Vector2? perchPos;       // where on screen she should hover while delivering an alert (HUD readout)
     private float perchUntil;
+    private Vector2 perchSize;
+    private bool perchBeside;        // hover next to the target (party list names) instead of above it (HP/MP numbers)
     private string? pendingTip;      // message that comes right after the "Hey!"
     private float pendingDelay;
     private float tipDuration;
@@ -112,7 +114,12 @@ public sealed class FairyRenderer
     public bool IsPerchActive => time < perchUntil;
 
     /// <summary>Screen position of the HUD readout to hover over (null = none).</summary>
-    public void SetPerch(Vector2? position) => perchPos = position;
+    public void SetPerch(Vector2? center, Vector2 size = default, bool beside = false)
+    {
+        perchPos = center;
+        perchSize = size;
+        perchBeside = beside;
+    }
 
     /// <summary>Hides everything (used in PvP).</summary>
     public void Suspend()
@@ -163,6 +170,9 @@ public sealed class FairyRenderer
             }
         }
 
+        // While she is saying something she moves much less, so the message is easy to read.
+        var calm = bubble.IsShowing || pendingTip != null;
+
         // Pick a new spot to flutter to every second or two, and swap shoulders every now and then.
         retargetTimer -= dt;
         if (retargetTimer <= 0f)
@@ -173,11 +183,14 @@ public sealed class FairyRenderer
             wander = new Vector2(MathF.Cos(angle) * 1.3f, MathF.Sin(angle) * 0.8f) * radius;
         }
 
-        sideTimer -= dt;
-        if (sideTimer <= 0f)
+        if (!calm)
         {
-            sideTimer = 8f + Random.Shared.NextSingle() * 6f;
-            side = -side;
+            sideTimer -= dt;
+            if (sideTimer <= 0f)
+            {
+                sideTimer = 8f + Random.Shared.NextSingle() * 6f;
+                side = -side;
+            }
         }
 
         // Small constant hovering wobble.
@@ -187,8 +200,10 @@ public sealed class FairyRenderer
         Vector2 home;
         if (perchPos.HasValue && time < perchUntil)
         {
-            var hover = half + 14f * unit;
-            home = perchPos.Value + new Vector2(0f, -hover) + bob * 0.35f;
+            if (perchBeside)
+                home = perchPos.Value + new Vector2(perchSize.X * 0.5f + half + 10f * unit, 0f) + bob * 0.2f;
+            else
+                home = perchPos.Value + new Vector2(0f, -(half + 14f * unit)) + bob * 0.35f;
         }
         else
         {
@@ -200,7 +215,7 @@ public sealed class FairyRenderer
                 x = shoulder.X + side * sideDistance;
             }
 
-            home = new Vector2(x, shoulder.Y - 0.15f * pxPerYalm) + wander * (WanderYalms * pxPerYalm) + bob;
+            home = new Vector2(x, shoulder.Y - 0.15f * pxPerYalm) + wander * (WanderYalms * pxPerYalm * (calm ? 0.12f : 1f)) + bob * (calm ? 0.3f : 1f);
         }
 
         // The speech bubble is rigidly attached to her (it never moves on its own), so while it is showing she stays far
@@ -271,8 +286,8 @@ public sealed class FairyRenderer
         }
 
         // Underdamped spring: she overshoots a little, which reads as flying. Much snappier when dodging the mouse.
-        var stiffness = sprint ? 75f : 18f;
-        var damping = 2f * MathF.Sqrt(stiffness) * (sprint ? 0.85f : 0.55f);
+        var stiffness = sprint ? 75f : (calm ? 12f : 18f);
+        var damping = 2f * MathF.Sqrt(stiffness) * (sprint ? 0.85f : (calm ? 1.0f : 0.55f)); // calm: no overshoot
         var accel = (target - position) * stiffness - velocity * damping;
         velocity += accel * dt;
         position += velocity * dt;

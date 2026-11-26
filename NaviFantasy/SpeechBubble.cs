@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Textures;
@@ -51,6 +52,9 @@ public sealed class SpeechBubble
     }
 
     public void Dismiss() => remaining = 0f;
+
+    /// <summary>True while a message is on screen.</summary>
+    public bool IsShowing => remaining > 0f && !string.IsNullOrWhiteSpace(text);
 
     /// <summary>Screen rectangle of the bubble as drawn this frame (false if it is not showing).</summary>
     public bool TryGetRect(out Vector2 min, out Vector2 max)
@@ -200,32 +204,77 @@ public sealed class SpeechBubble
         }
     }
 
-    /// <summary>Greedy word wrap; anything beyond maxLines is cut with an ellipsis.</summary>
-    private static List<string> Wrap(string message, float maxWidth, int maxLines)
+    /// <summary>Words stay whole; every Japanese/CJK character is its own token (they have no spaces).</summary>
+    private static List<string> Tokenize(string message)
     {
-        var words = message.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var lines = new List<string>();
-        var current = string.Empty;
-        foreach (var word in words)
+        var tokens = new List<string>();
+        var word = new StringBuilder();
+
+        void Flush()
         {
-            var candidate = current.Length == 0 ? word : current + " " + word;
-            if (current.Length == 0 || ImGui.CalcTextSize(candidate).X <= maxWidth)
+            if (word.Length > 0)
             {
-                current = candidate;
-            }
-            else
-            {
-                lines.Add(current);
-                current = word;
+                tokens.Add(word.ToString());
+                word.Clear();
             }
         }
 
-        if (current.Length > 0) lines.Add(current);
-        if (lines.Count == 0) lines.Add(string.Empty);
+        foreach (var ch in message)
+        {
+            if (ch == ' ')
+            {
+                Flush();
+                tokens.Add(" ");
+            }
+            else if (ch >= '\u3000')
+            {
+                Flush();
+                tokens.Add(ch.ToString());
+            }
+            else
+            {
+                word.Append(ch);
+            }
+        }
+
+        Flush();
+        return tokens;
+    }
+
+    /// <summary>Greedy wrap; anything beyond maxLines is cut with an ellipsis.</summary>
+    private static List<string> Wrap(string message, float maxWidth, int maxLines)
+    {
+        var lines = new List<string>();
+        var current = string.Empty;
+
+        foreach (var token in Tokenize(message))
+        {
+            if (current.Length == 0)
+            {
+                if (token != " ")
+                    current = token;
+            }
+            else if (ImGui.CalcTextSize(current + token).X <= maxWidth)
+            {
+                current += token;
+            }
+            else
+            {
+                lines.Add(current.TrimEnd());
+                current = token == " " ? string.Empty : token;
+            }
+        }
+
+        if (current.Length > 0)
+            lines.Add(current.TrimEnd());
+        if (lines.Count == 0)
+            lines.Add(string.Empty);
 
         if (lines.Count > maxLines)
         {
-            var last = string.Join(" ", lines.GetRange(maxLines - 1, lines.Count - (maxLines - 1)));
+            var rest = lines.GetRange(maxLines - 1, lines.Count - (maxLines - 1));
+            var separator = rest[0].Length > 0 && rest[0][0] >= '\u3000' ? string.Empty : " ";
+            var last = string.Join(separator, rest);
             while (last.Length > 1 && ImGui.CalcTextSize(last + "…").X > maxWidth)
                 last = last[..^1];
             lines = lines.GetRange(0, maxLines - 1);

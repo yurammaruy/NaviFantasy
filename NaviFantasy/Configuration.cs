@@ -11,6 +11,9 @@ public class Configuration : IPluginConfiguration
     /// <summary>Fairy size multiplier. 0.30 is the default size.</summary>
     public float Scale { get; set; } = 0.30f;
 
+    /// <summary>Language of everything the plugin says and shows.</summary>
+    public NaviLanguage Language { get; set; } = NaviLanguage.Portuguese;
+
     /// <summary>She warns you when your HP drops below this percentage.</summary>
     public int HpAlertPercent { get; set; } = 40;
 

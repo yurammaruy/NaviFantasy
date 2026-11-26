@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Game.Addon.Lifecycle;
+using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.Command;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
@@ -32,6 +35,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly MailWatcher mailWatcher;
 
     private HudPerch perch = HudPerch.None;
+    private string? perchName;
     private float perchRefresh;
     private bool wasPvP;
 
@@ -58,13 +62,14 @@ public sealed class Plugin : IDalamudPlugin
         this.condition = condition;
 
         configuration = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        Loc.Current = configuration.Language;
 
         var assets = Path.Combine(pluginInterface.AssemblyLocation.DirectoryName ?? string.Empty, "Assets");
         fairy = new FairyRenderer(configuration, assets, textureProvider, gameGui, objectTable, condition);
         audio = new AudioPlayer(Path.Combine(assets, "hey_listen.mp3"), log);
         dailies = new DailyTracker(dataManager, log);
         mailWatcher = new MailWatcher(addonLifecycle, gameGui);
-        var facts = new FunFacts(Path.Combine(assets, "curiosidades.txt"), log);
+        var facts = new FunFacts(assets, log);
         engine = new AlertEngine(configuration, objectTable, partyList, dataManager, condition, facts, clientState, dailies, mailWatcher);
         hud = new HudLocator(gameGui);
 
@@ -73,12 +78,12 @@ public sealed class Plugin : IDalamudPlugin
 
         commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Navi Fantasy: /navi (settings), /navi status, /navi test <hp|mp|heal|tank|boss|danger|fact|daily|mail|water>, /navi roulettes, /navi mail",
+            HelpMessage = Loc.Get("cmd_help"),
         });
 
         commandManager.AddHandler(FactCommandName, new CommandInfo(OnFactCommand)
         {
-            HelpMessage = "Navi tells you a random FF14 curiosity right now (You Know FF14).",
+            HelpMessage = Loc.Get("cmd_fact_help"),
         });
 
         pluginInterface.UiBuilder.Draw += Draw;
@@ -87,6 +92,8 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     private void ToggleConfig() => configWindow.Toggle();
+
+    private void Say(string text) => chatGui.Print("[Navi] " + text);
 
     private void Draw()
     {
@@ -124,10 +131,11 @@ public sealed class Plugin : IDalamudPlugin
         audio.Play();
         fairy.Announce(alert.Text, alert.Duration, alert.Perch != HudPerch.None);
         perch = alert.Perch;
+        perchName = alert.PerchName;
         perchRefresh = 0f;
     }
 
-    /// <summary>While an HP/MP alert is active, keep telling the fairy where that number is on the HUD.</summary>
+    /// <summary>While an alert that points at something on the HUD is active, keep telling the fairy where it is.</summary>
     private void UpdatePerch(float dt)
     {
         if (perch == HudPerch.None)
@@ -149,23 +157,37 @@ public sealed class Plugin : IDalamudPlugin
         if (player == null)
             return;
 
-        var isHp = perch == HudPerch.Hp;
-        var value = isHp ? player.CurrentHp : player.CurrentMp;
-        if (hud.TryLocate(value, !isHp, out var center))
-            fairy.SetPerch(center); // if it is not found this frame, she simply stays where she was
+        // If the target is not found this frame, she simply stays where she was.
+        switch (perch)
+        {
+            case HudPerch.PartyMember:
+                if (perchName != null && hud.TryLocatePartyMember(perchName, out var nameCenter, out var nameSize))
+                    fairy.SetPerch(nameCenter, nameSize, beside: true);
+                break;
+
+            case HudPerch.Hp:
+            case HudPerch.Mp:
+            {
+                var isHp = perch == HudPerch.Hp;
+                var value = isHp ? player.CurrentHp : player.CurrentMp;
+                if (hud.TryLocate(value, !isHp, out var center))
+                    fairy.SetPerch(center);
+                break;
+            }
+        }
     }
 
     private void OnFactCommand(string command, string args)
     {
         if (clientState.IsPvP)
         {
-            chatGui.Print("[Navi] A fada está desativada no PvP.");
+            Say(Loc.Get("pvp_off"));
             return;
         }
 
         if (objectTable.LocalPlayer == null || !engine.MakeFactAlert(out var alert))
         {
-            chatGui.Print("[Navi] Não encontrei nenhuma curiosidade (Assets/curiosidades.txt).");
+            Say(Loc.Get("no_facts"));
             return;
         }
 
@@ -196,36 +218,41 @@ public sealed class Plugin : IDalamudPlugin
                 PrintMail();
                 break;
             default:
-                chatGui.Print("[Navi] Comandos: /navi (configurações), /navi status, /navi test <hp|mp|heal|tank|boss|danger|fact|daily|mail|water>, /navi roulettes, /navi mail, /ykff14");
+                Say(Loc.Get("cmd_usage"));
                 break;
         }
     }
+
+    private string RoleName(int role) => role switch
+    {
+        1 => Loc.Get("role_tank"),
+        2 => Loc.Get("role_melee"),
+        3 => Loc.Get("role_ranged"),
+        4 => Loc.Get("role_healer"),
+        _ => Loc.Get("role_none"),
+    };
+
+    private static string YesNo(bool value) => Loc.Get(value ? "yes" : "no");
 
     private void PrintStatus()
     {
         var player = objectTable.LocalPlayer;
         if (player == null || !engine.TryGetProfile(out var me))
         {
-            chatGui.Print("[Navi] Nenhum personagem encontrado.");
+            Say(Loc.Get("no_char"));
             return;
         }
 
-        var role = me.Role switch
-        {
-            1 => "Tank",
-            2 => "DPS corpo a corpo",
-            3 => "DPS à distância",
-            4 => "Healer",
-            _ => "sem função de combate",
-        };
+        Say(Loc.Get("status_hello", me.FirstName, me.JobName, me.JobAbbreviation, RoleName(me.Role)));
 
-        chatGui.Print($"[Navi] Olá, {me.FirstName}! Você é {me.JobName} ({me.JobAbbreviation}), função: {role}.");
         var pendingDailies = engine.PendingDailies();
-        chatGui.Print($"[Navi] Roletas diárias pendentes: {(pendingDailies.Count == 0 ? "nenhuma" : string.Join(", ", pendingDailies))}");
+        Say(Loc.Get("status_daily", pendingDailies.Count == 0 ? Loc.Get("none_word") : string.Join(", ", pendingDailies)));
+
         var use = engine.CurrentTerritoryUse();
-        var minutes = engine.SafeSeconds / 60f;
-        chatGui.Print($"[Navi] Território: tipo {(use == uint.MaxValue ? "?" : use.ToString())} | zona segura: {(engine.IsInSafeArea() ? "sim" : "não")} | contador de curiosidade: {minutes:0.0}/60 min");
-        chatGui.Print($"[Navi] HP {player.CurrentHp}/{player.MaxHp} | MP {player.CurrentMp}/{player.MaxMp} | grupo: {partyList.Length} | PvP: {(clientState.IsPvP ? "sim (fada desativada)" : "não")} | em combate: {(condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.InCombat] ? "sim" : "não")}");
+        Say(Loc.Get("status_area", use == uint.MaxValue ? "?" : use.ToString(), YesNo(engine.IsInSafeArea()), (engine.SafeSeconds / 60f).ToString("0.0")));
+
+        var pvp = clientState.IsPvP ? Loc.Get("pvp_on") : Loc.Get("no");
+        Say(Loc.Get("status_vitals", player.CurrentHp, player.MaxHp, player.CurrentMp, player.MaxMp, partyList.Length, pvp, YesNo(condition[ConditionFlag.InCombat])));
     }
 
     private void PrintRoulettes()
@@ -233,12 +260,16 @@ public sealed class Plugin : IDalamudPlugin
         var chosen = configuration.DailyRouletteIds != null ? new HashSet<uint>(configuration.DailyRouletteIds) : dailies.DefaultIds();
         if (dailies.Roulettes.Count == 0)
         {
-            chatGui.Print("[Navi] Não consegui carregar a lista de roletas.");
+            Say(Loc.Get("roulettes_fail"));
             return;
         }
 
         foreach (var r in dailies.Roulettes)
-            chatGui.Print($"[Navi] {r.Id}: {r.Name} - {(dailies.IsComplete(r.Id) ? "concluída hoje" : "pendente")}{(chosen.Contains(r.Id) ? " [acompanhada]" : string.Empty)}");
+        {
+            var state = Loc.Get(dailies.IsComplete(r.Id) ? "done_today" : "pending_word");
+            var tracked = chosen.Contains(r.Id) ? Loc.Get("tracked_tag") : string.Empty;
+            Say($"{r.Id}: {r.Name} - {state}{tracked}");
+        }
     }
 
     private void PrintMail()
@@ -246,29 +277,41 @@ public sealed class Plugin : IDalamudPlugin
         var seen = mailWatcher.Describe();
         if (seen.Count == 0)
         {
-            chatGui.Print("[Navi] Nenhum elemento de HUD com \"Letter\", \"Mail\" ou \"Notification\" no nome foi visto ainda (se o plugin foi instalado com o jogo aberto, relogue).");
+            Say(Loc.Get("mail_none_seen"));
         }
         else
         {
             foreach (var (name, visible) in seen)
-                chatGui.Print($"[Navi] HUD: {name} - {(visible ? "visível" : "oculto")}");
+                Say($"HUD: {name} - {Loc.Get(visible ? "visible_word" : "hidden_word")}");
         }
 
-        chatGui.Print($"[Navi] Cartas não lidas (palpite): {(mailWatcher.HasUnreadMail() ? "sim" : "não")}");
+        Say(Loc.Get("mail_guess", YesNo(mailWatcher.HasUnreadMail())));
     }
 
     private void RunTest(string what)
     {
         if (clientState.IsPvP)
         {
-            chatGui.Print("[Navi] A fada está desativada no PvP.");
+            Say(Loc.Get("pvp_off"));
             return;
         }
 
         if (!engine.TryGetProfile(out var me))
         {
-            chatGui.Print("[Navi] Nenhum personagem encontrado.");
+            Say(Loc.Get("no_char"));
             return;
+        }
+
+        // For the healer test, point at a real party member (so you can see her fly to the party list).
+        string? ally = null;
+        foreach (var member in partyList)
+        {
+            var name = member.Name.TextValue;
+            if (name != me.FullName)
+            {
+                ally = name;
+                break;
+            }
         }
 
         var samplePending = engine.PendingDailies();
@@ -277,22 +320,27 @@ public sealed class Plugin : IDalamudPlugin
 
         Alert? alert = what switch
         {
+            "hp" => new Alert(AlertKind.Test, Loc.Get("hp_low", me.FirstName), 70, HudPerch.Hp, 4.5f),
+            "mp" => new Alert(AlertKind.Test, Loc.Get("mp_low", me.FirstName), 40, HudPerch.Mp, 4.5f),
+            "heal" => new Alert(
+                AlertKind.Test,
+                Loc.Get("ally_heal", ally != null ? AlertEngine.FirstName(ally) : "Fulano"),
+                60,
+                ally != null ? HudPerch.PartyMember : HudPerch.None,
+                3.5f,
+                ally),
+            "tank" => new Alert(AlertKind.Test, Loc.Get("allies_hurt", me.FirstName), 50, HudPerch.None, 4f),
+            "boss" => new Alert(AlertKind.Test, Loc.Get("boss_cast", "Boss", "Devastating Blow"), 80, HudPerch.None, 4f),
             "fact" => engine.MakeFactAlert(out var fact) ? fact : null,
             "daily" => engine.MakeDailyAlert(me.FirstName, samplePending),
             "mail" => engine.MakeMailAlert(me.FirstName),
             "water" => AlertEngine.MakeHydrationAlert(),
-            "hp" => new Alert(AlertKind.Test, $"{me.FirstName}, seu HP está baixo (teste)!", 70, HudPerch.Hp, 4.5f),
-            "mp" => new Alert(AlertKind.Test, $"{me.FirstName}, sua mana está baixa (teste)!", 40, HudPerch.Mp, 4.5f),
-            "heal" => new Alert(AlertKind.Test, "Fulano precisa de cura! (teste)", 60, HudPerch.None, 3.5f),
-            "tank" => new Alert(AlertKind.Test, $"{me.FirstName}, seus aliados estão sofrendo dano! (teste)", 50, HudPerch.None, 4f),
-            "boss" => new Alert(AlertKind.Test, "Chefe de Teste está preparando Golpe Devastador!", 80, HudPerch.None, 4f),
-            "danger" => new Alert(AlertKind.Test, $"Sai daí, {me.FirstName}! Golpe Devastador vai te acertar! (teste)", 100, HudPerch.None, 4f),
             _ => null,
         };
 
         if (alert == null)
         {
-            chatGui.Print("[Navi] Use: /navi test <hp|mp|heal|tank|boss|danger|fact|daily|mail|water>");
+            Say(Loc.Get("test_usage"));
             return;
         }
 

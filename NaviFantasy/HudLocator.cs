@@ -1,3 +1,4 @@
+using System;
 using System.Numerics;
 using System.Text;
 using Dalamud.Plugin.Services;
@@ -50,6 +51,58 @@ public sealed unsafe class HudLocator
         }
 
         return false;
+    }
+
+    /// <summary>Finds the name of a party member in the HUD party list (so the fairy can fly to it).</summary>
+    public bool TryLocatePartyMember(string fullName, out Vector2 center, out Vector2 size)
+    {
+        center = default;
+        size = default;
+
+        var addon = (AtkUnitBase*)gameGui.GetAddonByName("_PartyList").Address;
+        if (addon == null || !addon->IsVisible || string.IsNullOrWhiteSpace(fullName))
+            return false;
+
+        var found = false;
+        CollectText(&addon->UldManager, fullName, addon->Scale, 0, ref found, ref center, ref size);
+        if (!found)
+            CollectText(&addon->UldManager, AlertEngine.FirstName(fullName), addon->Scale, 0, ref found, ref center, ref size);
+
+        return found;
+    }
+
+    private static void CollectText(AtkUldManager* uld, string needle, float scale, int depth, ref bool found, ref Vector2 center, ref Vector2 size)
+    {
+        if (found || uld == null || uld->NodeList == null || depth > 6)
+            return;
+
+        for (var i = 0; i < uld->NodeListCount && !found; i++)
+        {
+            var node = uld->NodeList[i];
+            if (node == null)
+                continue;
+
+            var type = (int)node->Type;
+            if (type == (int)NodeType.Text)
+            {
+                if ((node->NodeFlags & NodeFlags.Visible) == 0)
+                    continue;
+
+                var text = ((AtkTextNode*)node)->NodeText.ToString();
+                if (!string.IsNullOrEmpty(text) && text.Contains(needle, StringComparison.OrdinalIgnoreCase))
+                {
+                    size = new Vector2(node->Width * scale, node->Height * scale);
+                    center = new Vector2(node->ScreenX + size.X * 0.5f, node->ScreenY + size.Y * 0.5f);
+                    found = true;
+                }
+            }
+            else if (type >= 1000)
+            {
+                var comp = ((AtkComponentNode*)node)->Component;
+                if (comp != null)
+                    CollectText(&comp->UldManager, needle, scale, depth + 1, ref found, ref center, ref size);
+            }
+        }
     }
 
     private static void Collect(AtkUldManager* uld, string target, float scale, int depth, ref int matches, ref Vector2 first, ref Vector2 last)
