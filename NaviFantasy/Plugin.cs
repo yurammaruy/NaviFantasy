@@ -290,6 +290,7 @@ public sealed class Plugin : IDalamudPlugin
         Say(Loc.Get("status_hello", me.FirstName, me.JobName, me.JobAbbreviation, RoleName(me.Role)));
 
         Say(Loc.Get("status_learned", memory.KnownBossCount));
+        Say($"Radar: cast position field = {BossRadar.CastLocationFieldName}");
         var pendingDailies = engine.PendingDailies();
         Say(Loc.Get("status_daily", pendingDailies.Count == 0 ? Loc.Get("none_word") : string.Join(", ", pendingDailies)));
 

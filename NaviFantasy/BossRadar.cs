@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Numerics;
+using System.Reflection;
 using System.Text;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Game;
@@ -292,7 +293,17 @@ public sealed class BossRadar
         }
     }
 
-    /// <summary>The position the game stores for where this cast is aimed (read from the native cast info).</summary>
+    private static FieldInfo? castLocationField;
+    private static bool castLocationSearched;
+
+    /// <summary>Name of the native field the fairy reads the aimed position from (empty until a cast has been seen).</summary>
+    public static string CastLocationFieldName => castLocationField?.Name ?? "?";
+
+    /// <summary>
+    /// The position the game stores for where this cast is aimed (the native "cast info" struct). Its field name is not the
+    /// same in every version of the game's structures, so the position field is found by its type instead of its name.
+    /// If it cannot be found, ground-aimed areas are simply treated as unknown (no false claims).
+    /// </summary>
     private static unsafe bool TryGetCastLocation(IBattleNpc npc, out Vector2 location)
     {
         location = default;
@@ -304,12 +315,54 @@ public sealed class BossRadar
         if (info == null)
             return false;
 
-        var l = info->CastLocation;
-        if (l.X == 0f && l.Z == 0f)
+        object boxed = *info; // a copy of the native cast info
+        if (!castLocationSearched)
+        {
+            castLocationSearched = true;
+            castLocationField = FindLocationField(boxed.GetType());
+        }
+
+        if (castLocationField == null)
             return false;
 
-        location = new Vector2(l.X, l.Z);
+        var value = castLocationField.GetValue(boxed);
+        if (value == null)
+            return false;
+
+        var type = value.GetType();
+        var x = type.GetField("X")?.GetValue(value);
+        var z = type.GetField("Z")?.GetValue(value);
+        if (x is not float fx || z is not float fz)
+            return false;
+        if (fx == 0f && fz == 0f)
+            return false;
+
+        location = new Vector2(fx, fz);
         return true;
+    }
+
+    private static FieldInfo? FindLocationField(Type structType)
+    {
+        FieldInfo? best = null;
+        var bestScore = -1;
+        foreach (var field in structType.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+        {
+            if (field.FieldType.Name != "Vector3")
+                continue;
+
+            var name = field.Name;
+            var score = name.Contains("Location", StringComparison.OrdinalIgnoreCase) ? 3
+                : name.Contains("Target", StringComparison.OrdinalIgnoreCase) ? 2
+                : name.Contains("Pos", StringComparison.OrdinalIgnoreCase) ? 1
+                : 0;
+            if (score > bestScore)
+            {
+                best = field;
+                bestScore = score;
+            }
+        }
+
+        return best;
     }
 
     private void SetCircle(RadarCast c, Vector2 center, float radius, bool inside)
