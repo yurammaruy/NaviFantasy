@@ -7,6 +7,9 @@ public enum AlertKind
     AllyNeedsHeal,
     AlliesDamaged,
     BossCast,
+    DangerZone,
+    Learning,
+    Prediction,
     Fact,
     DailyTasks,
     UnreadMail,
@@ -23,4 +26,4 @@ public enum HudPerch
     PartyMember,
 }
 
-public sealed record Alert(AlertKind Kind, string Text, int Priority, HudPerch Perch, float Duration, string? PerchName = null);
+public sealed record Alert(AlertKind Kind, string Text, int Priority, HudPerch Perch, float Duration, string? PerchName = null, bool Urgent = false);

@@ -13,16 +13,61 @@ public sealed class ConfigWindow : Window
     private readonly Configuration config;
     private readonly Action save;
     private readonly DailyTracker tracker;
+    private readonly Action forgetAll;
+    private bool forgetArmed;
 
-    public ConfigWindow(Configuration config, Action save, DailyTracker tracker)
+    public ConfigWindow(Configuration config, Action save, DailyTracker tracker, Action forgetAll)
         : base("Navi Fantasy###NaviFantasyConfig", ImGuiWindowFlags.AlwaysAutoResize)
     {
         this.config = config;
         this.save = save;
         this.tracker = tracker;
+        this.forgetAll = forgetAll;
     }
 
     public override void Draw()
+    {
+        if (!ImGui.BeginTabBar("##navitabs"))
+            return;
+
+        if (ImGui.BeginTabItem(Loc.Get("tab_general") + "###tabgeneral"))
+        {
+            DrawGeneral();
+            ImGui.EndTabItem();
+        }
+
+        if (ImGui.BeginTabItem(Loc.Get("tab_boss") + "###tabboss"))
+        {
+            DrawBoss();
+            ImGui.EndTabItem();
+        }
+
+        ImGui.EndTabBar();
+    }
+
+    private void Toggle(string labelKey, bool current, Action<bool> set, string id)
+    {
+        var value = current;
+        if (ImGui.Checkbox($"{Loc.Get(labelKey)}##{id}", ref value))
+        {
+            set(value);
+            save();
+        }
+    }
+
+    private void IntSlider(string labelKey, int current, int min, int max, string format, Action<int> set, string id)
+    {
+        var value = current;
+        ImGui.SetNextItemWidth(260f);
+        if (ImGui.SliderInt($"{Loc.Get(labelKey)}##{id}", ref value, min, max, format))
+            set(value);
+        if (ImGui.IsItemDeactivatedAfterEdit())
+            save();
+    }
+
+    // ------------------------------------------------------------------ general
+
+    private void DrawGeneral()
     {
         // ---- language
         if (ImGui.BeginCombo(Loc.Get("cfg_language"), Loc.NativeName(config.Language)))
@@ -53,36 +98,14 @@ public sealed class ConfigWindow : Window
         ImGui.Separator();
 
         // ---- thresholds
-        var hp = config.HpAlertPercent;
-        ImGui.SetNextItemWidth(260f);
-        if (ImGui.SliderInt($"{Loc.Get("cfg_hp")}##hp", ref hp, 5, 95, "%d%%"))
-            config.HpAlertPercent = hp;
-        if (ImGui.IsItemDeactivatedAfterEdit())
-            save();
-
-        var mp = config.MpAlertPercent;
-        ImGui.SetNextItemWidth(260f);
-        if (ImGui.SliderInt($"{Loc.Get("cfg_mp")}##mp", ref mp, 5, 95, "%d%%"))
-            config.MpAlertPercent = mp;
-        if (ImGui.IsItemDeactivatedAfterEdit())
-            save();
-
-        var ally = config.AllyHealPercent;
-        ImGui.SetNextItemWidth(260f);
-        if (ImGui.SliderInt($"{Loc.Get("cfg_ally")}##ally", ref ally, 5, 95, "%d%%"))
-            config.AllyHealPercent = ally;
-        if (ImGui.IsItemDeactivatedAfterEdit())
-            save();
+        IntSlider("cfg_hp", config.HpAlertPercent, 5, 95, "%d%%", v => config.HpAlertPercent = v, "hp");
+        IntSlider("cfg_mp", config.MpAlertPercent, 5, 95, "%d%%", v => config.MpAlertPercent = v, "mp");
+        IntSlider("cfg_ally", config.AllyHealPercent, 5, 95, "%d%%", v => config.AllyHealPercent = v, "ally");
 
         ImGui.Separator();
 
         // ---- reminders
-        var dailies = config.RemindDailies;
-        if (ImGui.Checkbox($"{Loc.Get("cfg_dailies")}##dailies", ref dailies))
-        {
-            config.RemindDailies = dailies;
-            save();
-        }
+        Toggle("cfg_dailies", config.RemindDailies, v => config.RemindDailies = v, "dailies");
 
         if (config.RemindDailies && ImGui.CollapsingHeader($"{Loc.Get("cfg_roulettes")}##roulettes"))
         {
@@ -100,18 +123,55 @@ public sealed class ConfigWindow : Window
             }
         }
 
-        var mail = config.RemindMail;
-        if (ImGui.Checkbox($"{Loc.Get("cfg_mail")}##mail", ref mail))
+        Toggle("cfg_mail", config.RemindMail, v => config.RemindMail = v, "mail");
+        Toggle("cfg_water", config.RemindHydration, v => config.RemindHydration = v, "water");
+    }
+
+    // ------------------------------------------------------------------ boss fights
+
+    private void DrawBoss()
+    {
+        Toggle("cfg_boss_master", config.BossHelperEnabled, v => config.BossHelperEnabled = v, "bossmaster");
+
+        ImGui.BeginDisabled(!config.BossHelperEnabled);
+
+        ImGui.Separator();
+        Toggle("cfg_radar_window", config.RadarWindowVisible, v => config.RadarWindowVisible = v, "radarwindow");
+        Toggle("cfg_radar_aoe", config.RadarShowAreas, v => config.RadarShowAreas = v, "radararea");
+        Toggle("cfg_radar_floor", config.RadarFloorOverlay, v => config.RadarFloorOverlay = v, "radarfloor");
+        Toggle("cfg_radar_safe", config.RadarShowSafeSpots, v => config.RadarShowSafeSpots = v, "radarsafe");
+        IntSlider("cfg_radar_range", config.RadarRangeMeters, 15, 60, "%d m", v => config.RadarRangeMeters = v, "radarrange");
+        IntSlider("cfg_radar_size", config.RadarSizePixels, 140, 420, "%d px", v => config.RadarSizePixels = v, "radarsize");
+
+        ImGui.Separator();
+        Toggle("cfg_alert_upcoming", config.AlertUpcoming, v => config.AlertUpcoming = v, "alertupcoming");
+        Toggle("cfg_alert_danger", config.AlertDanger, v => config.AlertDanger = v, "alertdanger");
+        Toggle("cfg_alert_raidwide", config.AlertRaidwide, v => config.AlertRaidwide = v, "alertraidwide");
+        Toggle("cfg_alert_buster", config.AlertBusters, v => config.AlertBusters = v, "alertbuster");
+
+        ImGui.Separator();
+        Toggle("cfg_learning", config.LearningEnabled, v => config.LearningEnabled = v, "learning");
+        ImGui.BeginDisabled(!config.LearningEnabled);
+        Toggle("cfg_predict", config.LearnedPredictions, v => config.LearnedPredictions = v, "predict");
+        ImGui.EndDisabled();
+
+        // Erasing needs two clicks, so it cannot happen by accident.
+        if (ImGui.Button((forgetArmed ? Loc.Get("cfg_forget_confirm") : Loc.Get("cfg_forget")) + "##forget"))
         {
-            config.RemindMail = mail;
-            save();
+            if (forgetArmed)
+            {
+                forgetAll();
+                forgetArmed = false;
+            }
+            else
+            {
+                forgetArmed = true;
+            }
         }
 
-        var water = config.RemindHydration;
-        if (ImGui.Checkbox($"{Loc.Get("cfg_water")}##water", ref water))
-        {
-            config.RemindHydration = water;
-            save();
-        }
+        ImGui.EndDisabled();
+
+        ImGui.Separator();
+        ImGui.TextWrapped(Loc.Get("cfg_boss_note"));
     }
 }

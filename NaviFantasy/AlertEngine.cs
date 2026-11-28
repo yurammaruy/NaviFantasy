@@ -29,7 +29,8 @@ public readonly record struct PlayerProfile(string FullName, string FirstName, u
 public sealed class AlertEngine
 {
     private const float TickSeconds = 0.2f;
-    private const float PowerfulCastSeconds = 3.0f; // enemy casts at least this long count as "powerful"
+    private const float PowerfulCastSeconds = 3.0f; // enemy casts at least this long are announced
+    private const float DangerMinCastSeconds = 2.0f; // ...and "you are in the area" is checked from this length
     private const float ScanRadius = 50f;           // only enemies this close (yalms)
     private const float HeyLeadSeconds = 0.85f;     // the "Hey!" that comes before every message
     private const float FactIntervalSeconds = 3600f; // one curiosity per hour spent in a safe area
@@ -47,6 +48,7 @@ public sealed class AlertEngine
         public CastTrack(uint actionId) => ActionId = actionId;
         public uint ActionId;
         public bool Announced;
+        public bool DangerAnnounced;
     }
 
     private sealed record Candidate(Alert Alert, float Cooldown, Action? Commit);
@@ -60,6 +62,9 @@ public sealed class AlertEngine
     private readonly IClientState clientState;
     private readonly DailyTracker tracker;
     private readonly MailWatcher mail;
+    private readonly BossRadar radar;
+    private readonly MechanicTips tips;
+    private readonly BossMemory memory;
 
     private readonly Dictionary<AlertKind, float> readyAt = new();
     private readonly Dictionary<string, Queue<(float Time, float Pct)>> hpHistory = new();
@@ -79,7 +84,7 @@ public sealed class AlertEngine
     private float activeUntil;
     private int activePriority;
 
-    public AlertEngine(Configuration config, IObjectTable objectTable, IPartyList partyList, IDataManager dataManager, ICondition condition, FunFacts facts, IClientState clientState, DailyTracker tracker, MailWatcher mail)
+    public AlertEngine(Configuration config, IObjectTable objectTable, IPartyList partyList, IDataManager dataManager, ICondition condition, FunFacts facts, IClientState clientState, DailyTracker tracker, MailWatcher mail, BossRadar radar, MechanicTips tips, BossMemory memory)
     {
         this.config = config;
         this.objectTable = objectTable;
@@ -90,6 +95,9 @@ public sealed class AlertEngine
         this.clientState = clientState;
         this.tracker = tracker;
         this.mail = mail;
+        this.radar = radar;
+        this.tips = tips;
+        this.memory = memory;
     }
 
     public static string FirstName(string fullName)
@@ -448,49 +456,76 @@ public sealed class AlertEngine
         }
     }
 
-    // ---------------------------------------------------------------- enemy preparing a powerful attack / danger zone
+    // ---------------------------------------------------------------- boss fights: what is coming, and are you in the way
+
+    private bool UpcomingAllowed(RadarCast cast) => UpcomingAllowed(cast.Kind);
+
+    private bool UpcomingAllowed(Archetype kind) => kind switch
+    {
+        Archetype.Raidwide => config.AlertRaidwide,
+        Archetype.SingleTargetMe or Archetype.SingleTargetOther => config.AlertBusters,
+        _ => true,
+    };
 
     private void AddBossAlerts(IPlayerCharacter player, PlayerProfile me, List<Candidate> list)
     {
-        var seen = new HashSet<uint>();
-        var actions = dataManager.GetExcelSheet<LuminaAction>();
-
-        foreach (var obj in objectTable)
+        if (!config.BossHelperEnabled)
         {
-            if (obj is not IBattleNpc npc)
-                continue;
-            if ((npc.StatusFlags & StatusFlags.Hostile) == 0 || npc.IsDead || !npc.IsCasting) // hostile = an enemy you can fight
-                continue;
-            if (npc.CastActionType != 1) // 1 = a regular action (not an item, mount, etc.)
+            casts.Clear();
+            return;
+        }
+
+        // What the fairy learned about this boss: the one-time greeting, and attacks announced before they start.
+        if (config.LearningEnabled)
+        {
+            if (memory.Greeting is { } greeting)
+                list.Add(new Candidate(greeting, 0f, memory.GreetingDelivered));
+
+            if (config.LearnedPredictions && config.AlertUpcoming && memory.PendingPrediction(me) is { } prediction && UpcomingAllowed(prediction.Kind))
+                list.Add(new Candidate(prediction.Alert, 0f, prediction.Commit));
+        }
+
+        var seen = new HashSet<uint>();
+        foreach (var cast in radar.Casts)
+        {
+            if (cast.Total < DangerMinCastSeconds)
                 continue;
 
-            var total = npc.TotalCastTime;
-            if (total < PowerfulCastSeconds)
-                continue;
-            if (Vector3.Distance(npc.Position, player.Position) > ScanRadius)
-                continue;
-
-            var id = npc.EntityId;
-            seen.Add(id);
-            if (!casts.TryGetValue(id, out var track) || track.ActionId != npc.CastActionId)
+            seen.Add(cast.CasterId);
+            if (!casts.TryGetValue(cast.CasterId, out var track) || track.ActionId != cast.ActionId)
             {
-                track = new CastTrack(npc.CastActionId);
-                casts[id] = track;
-            }
-
-            var actionName = Loc.Get("strong_attack");
-            if (actions.TryGetRow(npc.CastActionId, out var action))
-            {
-                var name = action.Name.ExtractText();
-                if (!string.IsNullOrWhiteSpace(name))
-                    actionName = name;
+                track = new CastTrack(cast.ActionId);
+                casts[cast.CasterId] = track;
             }
 
             var captured = track;
-            if (!captured.Announced)
+            var actionName = string.IsNullOrWhiteSpace(cast.ActionName) ? Loc.Get("strong_attack") : cast.ActionName;
+
+            // You are standing in the area: this one cannot wait, so it skips most of the "Hey!" lead-in.
+            if (config.AlertDanger && cast.PlayerInside && !captured.DangerAnnounced && cast.Remaining > 0.6f)
             {
-                var text = Loc.Get("boss_cast", npc.Name.TextValue, actionName);
-                list.Add(new Candidate(new Alert(AlertKind.BossCast, text, 80, HudPerch.None, 4f), 6f, () => captured.Announced = true));
+                var text = Loc.Get("danger_now", me.FirstName, tips.Danger(cast)).Trim();
+                var seconds = Math.Clamp(cast.Remaining, 2f, 4f);
+                list.Add(new Candidate(new Alert(AlertKind.DangerZone, text, 100, HudPerch.None, seconds, null, true), 1.5f, () =>
+                {
+                    captured.DangerAnnounced = true;
+                    captured.Announced = true;
+                }));
+            }
+            else if (config.AlertUpcoming && !captured.Announced && cast.Total >= PowerfulCastSeconds && UpcomingAllowed(cast))
+            {
+                var tip = tips.Upcoming(cast, me);
+                if (config.LearningEnabled)
+                {
+                    // What she learned from earlier fights ("this one hurt you before", "last time you stood behind the boss").
+                    var extra = memory.Extra(cast);
+                    if (extra.Length > 0)
+                        tip = tip.Length + extra.Length > 150 ? extra : (tip + " " + extra).Trim(); // keep it short enough to read
+                }
+                var text = string.IsNullOrEmpty(tip)
+                    ? Loc.Get("boss_cast", cast.CasterName, actionName)
+                    : Loc.Get("boss_cast_tip", cast.CasterName, actionName, tip);
+                list.Add(new Candidate(new Alert(AlertKind.BossCast, text, 80, HudPerch.None, ReadingSeconds(text, 4.5f, 10f)), 6f, () => captured.Announced = true));
             }
         }
 

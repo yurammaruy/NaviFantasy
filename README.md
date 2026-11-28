@@ -29,7 +29,26 @@ and plays a short "Hey!" sound every 30 seconds, with a speech bubble.
   - **Tank:** tells you when your allies are taking damage.
   - **Healer:** tells you which ally needs healing, and flies to that ally's name in the party list.
   - **DPS:** only your own HP and mana.
-- **Any role:** warns you when an enemy is preparing a powerful attack (casts of 3 s or more).
+- **Boss fights (own tab in the settings, every part can be switched on or off separately):**
+  - a small **radar** window: you, the enemies, and the attack areas that are coming (north is up);
+  - the fairy says **what is coming and how to deal with it**, in one short sentence, by type of attack
+    (area around the boss, line in front of it, cone, damage to everyone, heavy hit on one target...);
+  - when you are **standing inside** an area we can calculate (circles and lines), she warns you right away and tells
+    you which way to move;
+  - optional: draw those areas on the floor (experimental, compare them with the game's own markers).
+  - **She learns each boss.** The first time she fights a boss she says so once ("this is my first time against him, I'm
+  scared but I'll do my best") and starts a small file for it. In every fight she notes which attacks come, when
+  (counted from the pull) and whether they hurt you or knocked you down. From the next fight on she announces an
+  attack a few seconds **before** it starts and reminds you which ones hurt you. Everything is stored on your
+  computer (`pluginConfigs/NaviFantasy/learned/`) and can be erased from the settings.
+  She also notes **where you were standing** when each attack landed and whether you got hurt, and learns from that
+  without needing to understand the attack: "last time, staying behind the boss worked", "last time, staying close to
+  Rin worked", or a **green mark on the radar** where you were safe last time. She says it as what happened last time,
+  never as a promise.
+  Attacks aimed at a spot on the floor are now located with the position the game stores for the cast.
+  The tips are generic. Tips for one specific attack can be added in `Assets/mechanics.json`
+  (`[ { "action": 12345, "tip": { "pt": "...", "en": "..." } } ]`). `/navi record` saves every enemy attack you meet to
+  a file, so tips can be written from real data.
 - **Curiosities:** for every hour spent in a safe area (the main cities and residential districts, out of combat)
   she tells a random "Did you know?" fact (100 facts, none repeats until all were told). The hour counter pauses
   outside those areas and resumes when you come back; it only starts over after she told a curiosity or when the
@@ -52,6 +71,7 @@ It is also a love letter to a certain annoying and very useful fairy.
 - `/navi status` shows what she detected: name, job, role, HP/MP, group, PvP.
 - `/navi test <hp|mp|heal|tank|boss|fact|daily|mail|water>` plays a sample alert so you can see it without waiting for the real thing.
 - `/navi roulettes` lists the roulettes and whether today's bonus is done; `/navi mail` shows what the mail detector sees.
+- `/navi radar` shows or hides the radar window; `/navi record` records enemy attacks.
 - `/ykff14` ("You Know FF14") makes her tell a random curiosity right now.
 
 ## Build (developers)

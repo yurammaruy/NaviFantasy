@@ -99,10 +99,10 @@ public sealed class FairyRenderer
     }
 
     /// <summary>"Hey!" immediately, then the actual message. Optionally she flies to the HUD readout (see SetPerch).</summary>
-    public void Announce(string tip, float tipSeconds, bool perch)
+    public void Announce(string tip, float tipSeconds, bool perch, bool urgent = false)
     {
-        const float heyLead = 0.85f;
-        bubble.Show("Hey!", 1.0f);
+        var heyLead = urgent ? 0.25f : 0.85f; // urgent warnings (danger!) do not wait
+        bubble.Show("Hey!", urgent ? 0.5f : 1.0f);
         Burst();
         pendingTip = tip;
         pendingDelay = heyLead;

@@ -32,6 +32,21 @@ public class Configuration : IPluginConfiguration
     /// <summary>Warn about unread letters in the Moogle mailbox.</summary>
     public bool RemindMail { get; set; } = true;
 
+    // ---------------------------------------------------------------- boss helper (each part can be switched on/off)
+    public bool BossHelperEnabled { get; set; } = true;
+    public bool RadarWindowVisible { get; set; } = true;
+    public bool RadarShowAreas { get; set; } = true;
+    public bool RadarFloorOverlay { get; set; } = false;
+    public bool RadarShowSafeSpots { get; set; } = true;   // green marks: where you were safe last time
+    public int RadarRangeMeters { get; set; } = 30;
+    public int RadarSizePixels { get; set; } = 220;
+    public bool AlertUpcoming { get; set; } = true;
+    public bool AlertDanger { get; set; } = true;
+    public bool AlertRaidwide { get; set; } = true;
+    public bool AlertBusters { get; set; } = true;
+    public bool LearningEnabled { get; set; } = true;       // the fairy learns each boss from the fights
+    public bool LearnedPredictions { get; set; } = true;    // ...and announces attacks before they start
+
     /// <summary>Every 1h11 she reminds you to eat and drink.</summary>
     public bool RemindHydration { get; set; } = true;
 }

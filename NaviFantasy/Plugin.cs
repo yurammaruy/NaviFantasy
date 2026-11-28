@@ -23,6 +23,10 @@ public sealed class Plugin : IDalamudPlugin
     private readonly IClientState clientState;
     private readonly IPartyList partyList;
     private readonly IChatGui chatGui;
+    private readonly IGameGui gameGui;
+    private readonly BossRadar radar;
+    private readonly BossMemory memory;
+    private readonly RadarWindow radarWindow;
     private readonly ICondition condition;
     private readonly Configuration configuration;
     private readonly WindowSystem windowSystem = new("NaviFantasy");
@@ -60,6 +64,7 @@ public sealed class Plugin : IDalamudPlugin
         this.partyList = partyList;
         this.chatGui = chatGui;
         this.condition = condition;
+        this.gameGui = gameGui;
 
         configuration = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         Loc.Current = configuration.Language;
@@ -70,11 +75,22 @@ public sealed class Plugin : IDalamudPlugin
         dailies = new DailyTracker(dataManager, log);
         mailWatcher = new MailWatcher(addonLifecycle, gameGui);
         var facts = new FunFacts(assets, log);
-        engine = new AlertEngine(configuration, objectTable, partyList, dataManager, condition, facts, clientState, dailies, mailWatcher);
+        var logPath = Path.Combine(pluginInterface.ConfigDirectory.FullName, "bosslog.csv");
+        radar = new BossRadar(configuration, objectTable, dataManager, clientState, log, logPath);
+        var tips = new MechanicTips(Path.Combine(assets, "mechanics.json"), log);
+        memory = new BossMemory(configuration, radar, objectTable, condition, clientState, tips, Path.Combine(pluginInterface.ConfigDirectory.FullName, "learned"), log);
+        engine = new AlertEngine(configuration, objectTable, partyList, dataManager, condition, facts, clientState, dailies, mailWatcher, radar, tips, memory);
         hud = new HudLocator(gameGui);
 
-        configWindow = new ConfigWindow(configuration, () => pluginInterface.SavePluginConfig(configuration), dailies);
+        configWindow = new ConfigWindow(configuration, () => pluginInterface.SavePluginConfig(configuration), dailies, () =>
+        {
+            memory.ForgetAll();
+            Say(Loc.Get("forget_done"));
+        });
         windowSystem.AddWindow(configWindow);
+
+        radarWindow = new RadarWindow(configuration, radar, memory);
+        windowSystem.AddWindow(radarWindow);
 
         commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -99,7 +115,17 @@ public sealed class Plugin : IDalamudPlugin
     {
         var dt = Math.Min(ImGui.GetIO().DeltaTime, 0.05f);
 
+        // The radar window is shown when the boss helper and the radar are on (and never in PvP).
+        var radarWanted = configuration.BossHelperEnabled && configuration.RadarWindowVisible && !clientState.IsPvP;
+        radarWindow.IsOpen = radarWanted;
+
         windowSystem.Draw();
+
+        if (radarWanted && !radarWindow.IsOpen) // the player closed it with the X button
+        {
+            configuration.RadarWindowVisible = false;
+            pluginInterface.SavePluginConfig(configuration);
+        }
 
         // PvP: the fairy is switched off (PvP features will come later).
         if (clientState.IsPvP)
@@ -117,6 +143,18 @@ public sealed class Plugin : IDalamudPlugin
 
         wasPvP = false;
 
+        if (configuration.BossHelperEnabled)
+        {
+            radar.Update(dt);
+            if (configuration.RadarFloorOverlay)
+                radar.DrawFloor(gameGui);
+        }
+
+        if (configuration.BossHelperEnabled && configuration.LearningEnabled)
+            memory.Update(dt);
+        else
+            memory.Cancel();
+
         var alert = engine.Update(dt);
         if (alert != null)
             Raise(alert);
@@ -129,7 +167,7 @@ public sealed class Plugin : IDalamudPlugin
     private void Raise(Alert alert)
     {
         audio.Play();
-        fairy.Announce(alert.Text, alert.Duration, alert.Perch != HudPerch.None);
+        fairy.Announce(alert.Text, alert.Duration, alert.Perch != HudPerch.None, alert.Urgent);
         perch = alert.Perch;
         perchName = alert.PerchName;
         perchRefresh = 0f;
@@ -217,6 +255,12 @@ public sealed class Plugin : IDalamudPlugin
             case "mail":
                 PrintMail();
                 break;
+            case "radar":
+                ToggleRadar();
+                break;
+            case "record":
+                ToggleRecording();
+                break;
             default:
                 Say(Loc.Get("cmd_usage"));
                 break;
@@ -245,6 +289,7 @@ public sealed class Plugin : IDalamudPlugin
 
         Say(Loc.Get("status_hello", me.FirstName, me.JobName, me.JobAbbreviation, RoleName(me.Role)));
 
+        Say(Loc.Get("status_learned", memory.KnownBossCount));
         var pendingDailies = engine.PendingDailies();
         Say(Loc.Get("status_daily", pendingDailies.Count == 0 ? Loc.Get("none_word") : string.Join(", ", pendingDailies)));
 
@@ -270,6 +315,21 @@ public sealed class Plugin : IDalamudPlugin
             var tracked = chosen.Contains(r.Id) ? Loc.Get("tracked_tag") : string.Empty;
             Say($"{r.Id}: {r.Name} - {state}{tracked}");
         }
+    }
+
+    private void ToggleRadar()
+    {
+        configuration.RadarWindowVisible = !configuration.RadarWindowVisible;
+        if (configuration.RadarWindowVisible)
+            configuration.BossHelperEnabled = true;
+        pluginInterface.SavePluginConfig(configuration);
+        Say(Loc.Get(configuration.RadarWindowVisible ? "radar_on" : "radar_off"));
+    }
+
+    private void ToggleRecording()
+    {
+        radar.Recording = !radar.Recording;
+        Say(radar.Recording ? Loc.Get("record_on", radar.LogPath) : Loc.Get("record_off"));
     }
 
     private void PrintMail()
@@ -330,7 +390,8 @@ public sealed class Plugin : IDalamudPlugin
                 3.5f,
                 ally),
             "tank" => new Alert(AlertKind.Test, Loc.Get("allies_hurt", me.FirstName), 50, HudPerch.None, 4f),
-            "boss" => new Alert(AlertKind.Test, Loc.Get("boss_cast", "Boss", "Devastating Blow"), 80, HudPerch.None, 4f),
+            "boss" => new Alert(AlertKind.Test, Loc.Get("boss_cast_tip", "Boss", "Devastating Blow", Loc.Get("tip_line")), 80, HudPerch.None, 5f),
+            "danger" => new Alert(AlertKind.Test, Loc.Get("danger_now", me.FirstName, Loc.Get("adv_line")), 100, HudPerch.None, 4f, null, true),
             "fact" => engine.MakeFactAlert(out var fact) ? fact : null,
             "daily" => engine.MakeDailyAlert(me.FirstName, samplePending),
             "mail" => engine.MakeMailAlert(me.FirstName),
